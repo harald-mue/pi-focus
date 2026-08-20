@@ -52,10 +52,13 @@ The installer writes to `${PI_CODING_AGENT_DIR:-~/.pi/agent}` and backs up repla
 
 | Input | Action |
 |---|---|
+| Shift+Enter (Ghostty and compatible terminals) or Ctrl+J (KGX fallback) | Insert a new line |
 | Ctrl+Shift+↑/↓ | Scroll history by three rows |
 | Right-click in input box | Open the terminal context menu (including Paste) |
-| F2, Alt+M, Ctrl+Shift+M, or `/focus` | Hide or show the dashboard |
+| F2, Alt+M, or `/focus` | Hide or show the dashboard |
 | Ctrl+Z | Suspend Pi |
+
+Modified-key support is terminal-dependent: Ghostty reports Shift+Enter distinctly, while KGX/VTE sends it as plain Enter. Use Ctrl+J for a newline in KGX.
 
 ## Documentation
 

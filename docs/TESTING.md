@@ -35,9 +35,11 @@ Also compare the bundled theme and skill when they changed.
 3. Verify the dashboard is a fixed right column and never overlaps transcript text.
 4. Verify editor and footer remain fixed at the bottom.
 5. Wrap the editor and open autocomplete; growth must reduce transcript height upward.
-6. Toggle the dashboard twice with F2, Alt+M, and `/focus` (Ctrl+Shift+M may work only in terminals that report it distinctly).
-7. Resize through 10, 20, 40, 80, 110, 160, 200, and 343 columns.
-8. Open `/delete-sessions` at 10, 20, and 40 columns and exercise list and confirmation modes.
+6. Toggle the dashboard twice with F2, Alt+M, and `/focus`.
+7. In Ghostty, verify Shift+Enter inserts a new line and plain Enter submits exactly once.
+8. In KGX/VTE, verify Shift+Enter is indistinguishable from plain Enter and Ctrl+J inserts a new line.
+9. Resize through 10, 20, 40, 80, 110, 160, 200, and 343 columns.
+10. Open `/delete-sessions` at 10, 20, and 40 columns and exercise list and confirmation modes.
 
 There must be no `Rendered line ... exceeds terminal width` error or new crash log.
 

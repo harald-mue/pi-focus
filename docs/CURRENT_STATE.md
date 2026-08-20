@@ -16,10 +16,12 @@ The dashboard appears at 110×28 or larger. A growing input area remains anchore
 
 ## Controls
 
+- Shift+Enter in Ghostty and other terminals with modified-key reporting: insert a new line
+- Ctrl+J in KGX/VTE or any terminal that sends Shift+Enter as plain Enter: insert a new line
 - Ctrl+Shift+↑/↓: scroll transcript by three rows
 - Right-click on the input row: open the native terminal context menu
 - Ctrl+V: Pi clipboard paste action
-- F2, Alt+M, Ctrl+Shift+M, or `/focus`: toggle dashboard
+- F2, Alt+M, or `/focus`: toggle dashboard
 - Ctrl+Z: suspend Pi
 
 ## Dashboard
@@ -42,5 +44,6 @@ The dashboard reports session/project identity, provider and model, supported qu
 - `tuiMode` must be `fullscreen`; the installer enforces it.
 - Layout attachment depends on Pi's current seven-container root structure.
 - Clipboard access depends on Pi's bundled native clipboard package and desktop clipboard availability.
+- Shift+Enter depends on terminal modifier reporting. It works in Ghostty; KGX/VTE sends plain Enter instead, so use Ctrl+J there.
 - Pi Focus disables fullscreen mouse reporting after startup so VTE/KGX can open its native right-click context menu. Consequently, mouse-wheel transcript scrolling and application-owned drag selection are unavailable; use keyboard scrolling and the terminal context menu instead.
 - Restart Pi after changing layout or session-lifecycle code.

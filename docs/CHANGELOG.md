@@ -8,6 +8,7 @@ Pi Focus currently targets Pi 0.84.1.
 - Session-safe `/resume`, `/new`, and reload lifecycle.
 - Explicit session names or first-message titles in the dashboard.
 - Fullscreen mouse reporting is disabled so native terminal right-click context-menu paste remains reliable.
+- Shift+Enter inserts a newline in Ghostty and other terminals with modified-key reporting; Ctrl+J is the documented KGX/VTE fallback.
 - Transcript-only Ctrl+Shift+↑/↓ scrolling; mouse-wheel reporting remains disabled for native context menus.
 - Provider quota, Git state, request activity, token commands, and bulk session deletion.
 - Width-safe rendering and long-session input latency below the 25 ms target in the recorded benchmark.

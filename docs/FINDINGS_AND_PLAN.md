@@ -22,6 +22,10 @@ Pi 0.84 can render the outgoing layout once after invalidating its extension con
 
 A previous Linux-only viewport wrapper emulated clipboard paste from right-click mouse events. In practice this was less reliable than the terminal context menu and could suppress paste entirely. Merely removing the wrapper is insufficient because fullscreen mouse reporting still prevents VTE/KGX from receiving right-click. Pi Focus therefore disables mouse reporting after fullscreen startup and does not intercept right-click paste.
 
+### Modified Enter keys depend on terminal reporting
+
+Ghostty reports Shift+Enter distinctly, allowing Pi Focus to insert a newline while plain Enter submits. KGX/VTE emits Shift+Enter as plain Enter, so an application cannot distinguish the two; Ctrl+J is the supported newline fallback there. Ctrl+Shift+M must remain unbound because Ctrl+M can alias Enter in legacy input.
+
 ## Current acceptance targets
 
 - no rendered line wider than the terminal, including 343 columns

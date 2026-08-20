@@ -445,7 +445,14 @@ class FocusEditor extends CustomEditor {
 	}
 
 	override handleInput(data: string): void {
-		if (matchesKey(data, Key.alt("m")) || matchesKey(data, Key.ctrlShift("m")) || matchesKey(data, Key.f2)) {
+		// Handle Shift+Enter before CustomEditor dispatches extension shortcuts.
+		// Ctrl+Shift+M is intentionally not a dashboard shortcut: terminals can
+		// encode Ctrl+M as Enter, which made newline input submit the prompt.
+		if (matchesKey(data, Key.shift("enter"))) {
+			super.handleInput("\n");
+			return;
+		}
+		if (matchesKey(data, Key.alt("m")) || matchesKey(data, Key.f2)) {
 			this.onToggleDashboard();
 			return;
 		}
@@ -1200,15 +1207,9 @@ export default function piFocus(pi: ExtensionAPI) {
 		description: "Toggle the passive Pi Focus dashboard",
 		handler: async (_args, ctx) => toggleDashboard(ctx),
 	});
-	// Ctrl+Shift+letter combinations are not distinguishable in many terminals;
-	// Ctrl+Shift+M is commonly reported as Ctrl+M/Enter. Keep it for terminals
-	// that support it, and also expose Alt+M and F2. The editor intercepts the
-	// same keys directly because focused editor input can take precedence over
-	// extension-level shortcuts.
-	pi.registerShortcut(Key.ctrlShift("m"), {
-		description: "Toggle the passive Pi Focus dashboard",
-		handler: toggleDashboard,
-	});
+	// The editor intercepts these keys directly because focused editor input can
+	// take precedence over extension-level shortcuts. Do not bind Ctrl+Shift+M:
+	// Ctrl+M and Enter are indistinguishable in terminals without key protocols.
 	pi.registerShortcut(Key.alt("m"), {
 		description: "Toggle the passive Pi Focus dashboard",
 		handler: toggleDashboard,

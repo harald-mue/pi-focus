@@ -17,7 +17,7 @@ Pi Focus builds on Pi's native fullscreen renderer. The layout root is an `HStac
 
 The workspace is a `VStack` containing the header, a growing transcript `ScrollView`, and an intrinsic-height bottom dock. A wrapped editor or autocomplete menu grows upward and reduces only the transcript height.
 
-The dashboard is 48 columns wide with a two-column gap. It is visible only at 110×28 or larger and can be toggled with F2, Alt+M, Ctrl+Shift+M, or `/focus`.
+The dashboard is 48 columns wide with a two-column gap. It is visible only at 110×28 or larger and can be toggled with F2, Alt+M, or `/focus`.
 
 ## Scrolling and selection
 
@@ -28,6 +28,8 @@ Pi's fullscreen renderer owns alternate-screen lifecycle and terminal cleanup. P
 ## Input and clipboard
 
 `FocusEditor` extends Pi's `CustomEditor`, preserving app-level actions and autocomplete while applying Pi Focus styling. Normal terminal bracketed paste and Pi's Ctrl+V clipboard action continue through `CustomEditor`.
+
+Shift+Enter inserts a newline when the terminal reports the modifier distinctly, as Ghostty does. KGX/VTE emits the same input as plain Enter, so Pi Focus cannot distinguish the keys there; Ctrl+J is the newline fallback. Ctrl+Shift+M is intentionally not registered because Ctrl+M can alias Enter in legacy terminal input.
 
 Pi Focus does not intercept or emulate right-click paste. Fullscreen mouse reporting would still prevent VTE/KGX from seeing the click, so Pi Focus explicitly disables terminal mouse-reporting modes after fullscreen startup. This restores the native terminal context menu at the cost of fullscreen mouse-wheel scrolling and application-owned drag selection.
 

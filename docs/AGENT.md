@@ -19,7 +19,8 @@ Installed copies under `~/.pi/agent/` are deployment targets, not development so
 - Keep the header, dashboard, input area, widgets, and footer fixed.
 - Auto-hide the header after ten seconds.
 - Keep Ctrl+Shift+↑/↓ transcript scrolling; native context-menu mode intentionally disables mouse-wheel reporting.
-- Keep F2, Alt+M, Ctrl+Shift+M, and `/focus` synchronized with UI help and documentation.
+- Keep F2, Alt+M, and `/focus` synchronized with UI help and documentation. Do not bind Ctrl+Shift+M because Ctrl+M can be encoded as Enter.
+- Preserve Shift+Enter newline handling for Ghostty and other modified-key-capable terminals, plus Ctrl+J as the KGX/VTE fallback.
 - Do not intercept right-click paste; disable fullscreen mouse reporting and leave right-button handling to the terminal.
 - Document that native context-menu mode disables application-owned wheel scrolling and drag selection.
 - Preserve width safety, the completed-tool accent, and normal-weight tool surfaces.
