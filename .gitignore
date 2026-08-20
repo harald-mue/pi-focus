@@ -1,0 +1,20 @@
+*.tar.gz
+.DS_Store
+__pycache__/
+node_modules/
+
+# Local credentials and environment files
+.env
+.env.*
+!.env.example
+auth.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Pi sessions, request dumps, and local backups
+*.jsonl
+dumps/
+last-request-*.json
+customization-backups/
