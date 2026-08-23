@@ -6,6 +6,7 @@ import {
 	type ContextUsage,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type KeybindingsManager,
 	Theme,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
@@ -50,13 +51,6 @@ const SIDEBAR_PADDING_X = 2;
 const PROVIDER_USAGE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_WHEEL_STEP = 3;
 const HEADER_AUTO_HIDE_MS = 10_000;
-const DISABLE_MOUSE_REPORTING = [
-	"\x1b[?1000l", // Mouse clicks
-	"\x1b[?1002l", // Mouse button motion
-	"\x1b[?1003l", // All mouse motion
-	"\x1b[?1006l", // SGR mouse protocol
-	"\x1b[?1015l", // urxvt mouse protocol
-].join("");
 const RESET_TERMINAL_MODES = [
 	"\x1b[?1000l", // Mouse clicks
 	"\x1b[?1002l", // Mouse button motion
@@ -94,14 +88,6 @@ function applyTerminalBackground(hex: string): void {
 		process.stdout.write(`\x1b]11;${hex}\x07`);
 	} catch {
 		// The terminal may already be unavailable during signal-driven exits.
-	}
-}
-
-function disableMouseReporting(): void {
-	try {
-		process.stdout.write(DISABLE_MOUSE_REPORTING);
-	} catch {
-		// The terminal may already be unavailable during shutdown.
 	}
 }
 
@@ -159,6 +145,81 @@ function patchToolSuccessStripe(): void {
 	}) as Theme["bg"];
 	theme.bg = patchedBg;
 	themeState[TOOL_SUCCESS_BG_PATCH_KEY] = patchedBg;
+}
+
+/** Pi binds Ctrl+Shift+↑/↓ to prompt jump; reclaim them for transcript scrolling. */
+function configureTranscriptScrollKeybindings(keybindings: KeybindingsManager): void {
+	keybindings.setUserBindings({
+		...keybindings.getUserBindings(),
+		"tui.altScreen.previousPrompt": [],
+		"tui.altScreen.nextPrompt": [],
+	});
+}
+
+function scrollTranscriptByKeyboard(
+	data: string,
+	transcriptScrollView: ScrollView | undefined,
+	step = HISTORY_WHEEL_STEP,
+): boolean {
+	if (!transcriptScrollView) return false;
+	if (matchesKey(data, Key.ctrlShift("up"))) {
+		transcriptScrollView.scrollBy(-step);
+		return true;
+	}
+	if (matchesKey(data, Key.ctrlShift("down"))) {
+		transcriptScrollView.scrollBy(step);
+		return true;
+	}
+	return false;
+}
+
+function scrollTranscriptByWheelFallback(
+	data: string,
+	transcriptScrollView: ScrollView | undefined,
+	step = HISTORY_WHEEL_STEP,
+): boolean {
+	if (!transcriptScrollView) return false;
+	if (matchesKey(data, Key.up) || matchesKey(data, Key.pageUp)) {
+		transcriptScrollView.scrollBy(-step);
+		return true;
+	}
+	if (matchesKey(data, Key.down) || matchesKey(data, Key.pageDown)) {
+		transcriptScrollView.scrollBy(step);
+		return true;
+	}
+	return false;
+}
+
+function isWheelFallbackScrollKey(data: string): boolean {
+	return matchesKey(data, Key.up)
+		|| matchesKey(data, Key.down)
+		|| matchesKey(data, Key.pageUp)
+		|| matchesKey(data, Key.pageDown);
+}
+
+interface SgrMouseEvent {
+	button: number;
+	release: boolean;
+}
+
+interface AltScreenTuiWithPaste {
+	onRightClickPaste?: () => void;
+	handleRightClickPaste(event: SgrMouseEvent): boolean;
+}
+
+/** Pi's alt-screen TUI only wires right-click paste on Windows; enable it on Linux too. */
+function enableLinuxRightClickPaste(tui: TUI): void {
+	if (process.platform !== "linux") return;
+	const alt = tui as unknown as AltScreenTuiWithPaste;
+	if (!alt.onRightClickPaste) return;
+	const original = alt.handleRightClickPaste.bind(alt);
+	alt.handleRightClickPaste = (event) => {
+		if (!event.release && event.button === 2) {
+			alt.onRightClickPaste?.();
+			return true;
+		}
+		return original(event);
+	};
 }
 
 function restoreToolSuccessStripe(): void {
@@ -433,6 +494,7 @@ class FocusEditor extends CustomEditor {
 		private readonly appTheme: Theme,
 		private readonly usesManagedLayout: () => boolean,
 		private readonly onViewportInput: (data: string) => boolean,
+		private readonly onWheelFallbackInput: (data: string) => boolean,
 		private readonly onToggleDashboard: () => void,
 	) {
 		super(tui, theme, keybindings, { paddingX: 1, autocompleteMaxVisible: 8 });
@@ -455,6 +517,17 @@ class FocusEditor extends CustomEditor {
 		if (matchesKey(data, Key.alt("m")) || matchesKey(data, Key.f2)) {
 			this.onToggleDashboard();
 			return;
+		}
+		// When mouse reporting is unavailable, some terminals emulate the wheel as
+		// arrow/page keys. Route those to the transcript while the prompt is empty
+		// so they do not browse editor history instead of scrolling the conversation.
+		if (
+			this.usesManagedLayout()
+			&& !this.isShowingAutocomplete()
+			&& this.isEditorEmpty()
+			&& isWheelFallbackScrollKey(data)
+		) {
+			if (this.onWheelFallbackInput(data)) return;
 		}
 		if (!this.onViewportInput(data)) super.handleInput(data);
 	}
@@ -666,7 +739,7 @@ class ControlCenter {
 
 		const footer = [
 			row(theme.fg("dim", truncateToWidth(this.cwd, contentWidth, "…"))),
-			row(theme.fg("dim", "Ctrl+Shift+↑↓ scroll · Right-click menu")),
+			row(theme.fg("dim", "Wheel / Ctrl+Shift+↑↓ scroll · Right-click paste")),
 			row(theme.fg("dim", "F2, Alt+M, /focus  hide")),
 		];
 		const bodyLimit = Math.max(0, targetHeight - footer.length);
@@ -998,39 +1071,27 @@ export default function piFocus(pi: ExtensionAPI) {
 			};
 		});
 
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => new FocusEditor(
-			tui,
-			theme,
-			keybindings,
-			appTheme,
-			() => transcriptScrollView !== undefined,
-			(data) => {
-				if (!transcriptScrollView) return false;
-				if (matchesKey(data, Key.ctrlShift("up"))) {
-					transcriptScrollView.scrollBy(-HISTORY_WHEEL_STEP);
-					return true;
-				}
-				if (matchesKey(data, Key.ctrlShift("down"))) {
-					transcriptScrollView.scrollBy(HISTORY_WHEEL_STEP);
-					return true;
-				}
-				return false;
-			},
-			() => void toggleDashboard(ctx),
-		));
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+			configureTranscriptScrollKeybindings(keybindings);
+			return new FocusEditor(
+				tui,
+				theme,
+				keybindings,
+				appTheme,
+				() => transcriptScrollView !== undefined,
+				(data) => scrollTranscriptByKeyboard(data, transcriptScrollView),
+				(data) => scrollTranscriptByWheelFallback(data, transcriptScrollView),
+				() => void toggleDashboard(ctx),
+			);
+		});
 
-		// Pi's fullscreen TUI enables global mouse reporting. In VTE/KGX that sends
-		// right-click to Pi instead of opening the terminal context menu. Pi Focus
-		// does not need to own right-click, so disable reporting after fullscreen
-		// startup and let the terminal handle context-menu paste exactly as plain
-		// regular-mode Pi does. This intentionally trades mouse wheel/drag selection
-		// for reliable native paste; keyboard transcript scrolling remains available.
-		disableMouseReporting();
-
+		// Keep Pi's fullscreen mouse reporting enabled so wheel events reach the
+		// primary transcript ScrollView. Right-click paste is wired on Linux below.
 		// Use Pi's native fullscreen layout engine. Only loaded notices and chat
 		// messages live in the ScrollView; header, editor dock, footer, and the
 		// right-hand dashboard are fixed layout siblings.
 		if (chromeTui && isViewportTUI(chromeTui)) {
+			enableLinuxRightClickPaste(chromeTui);
 			const roots = chromeTui.children;
 			const document = roots[0];
 			if (document instanceof Container && document.children.length >= 3 && roots.length >= 7) {
