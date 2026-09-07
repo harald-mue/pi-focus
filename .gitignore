@@ -18,3 +18,4 @@ auth.json
 dumps/
 last-request-*.json
 customization-backups/
+.pi/mcp.json
