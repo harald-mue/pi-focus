@@ -740,8 +740,8 @@ class ControlCenter {
 		}
 
 		const footer = [
-		row(theme.fg("muted", truncateToWidth(this.cwd, contentWidth, "…"))),
-			row(theme.fg("muted", "Wheel / Ctrl+Shift+↑↓ scroll · Right-click paste")),
+			row(theme.fg("muted", truncateToWidth(this.cwd, contentWidth, "…"))),
+			row(theme.fg("muted", `Ctrl+Shift+↑↓ scroll${this.state.wheelFallbackEnabled ? "  ·  ↑↓ scroll" : ""}`)),
 			row(theme.fg("muted", `F2, Alt+M, /focus  hide${this.state.wheelFallbackEnabled ? "" : "  · /wheel-scroll on"}`)),
 		];
 		const bodyLimit = Math.max(0, targetHeight - footer.length);
