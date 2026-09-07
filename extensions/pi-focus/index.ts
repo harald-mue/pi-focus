@@ -740,9 +740,9 @@ class ControlCenter {
 		}
 
 		const footer = [
-			row(theme.fg("dim", truncateToWidth(this.cwd, contentWidth, "…"))),
-			row(theme.fg("dim", "Wheel / Ctrl+Shift+↑↓ scroll · Right-click paste")),
-			row(theme.fg("dim", `F2, Alt+M, /focus  hide${this.state.wheelFallbackEnabled ? "" : "  · /wheel-scroll on"}`)),
+		row(theme.fg("muted", truncateToWidth(this.cwd, contentWidth, "…"))),
+			row(theme.fg("muted", "Wheel / Ctrl+Shift+↑↓ scroll · Right-click paste")),
+			row(theme.fg("muted", `F2, Alt+M, /focus  hide${this.state.wheelFallbackEnabled ? "" : "  · /wheel-scroll on"}`)),
 		];
 		const bodyLimit = Math.max(0, targetHeight - footer.length);
 		if (lines.length > bodyLimit) lines.length = bodyLimit;
