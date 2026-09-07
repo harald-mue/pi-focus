@@ -334,7 +334,7 @@ async function resolveDumpTarget(
 	const defaultPath = defaultDumpPath();
 	if (argPath) return resolveDumpPath(argPath);
 
-	if (!ctx.hasUI) return defaultPath;
+	if (!ctx.hasUI) return null;
 
 	try {
 		const useDefault = await ctx.ui.confirm(
@@ -344,10 +344,11 @@ async function resolveDumpTarget(
 		if (useDefault) return defaultPath;
 
 		const custom = await ctx.ui.input("Alternative path:", defaultPath);
-		return resolveDumpPath(custom?.trim() || defaultPath);
+		const trimmed = custom?.trim();
+		return trimmed ? resolveDumpPath(trimmed) : null;
 	} catch {
-		// Cursor bridge may not support all UI dialogs — fall back to default path.
-		return defaultPath;
+		// Return null when UI dialogs are not supported (e.g. cursor bridge).
+		return null;
 	}
 }
 

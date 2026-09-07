@@ -5,7 +5,7 @@
  * Keys: Space toggle · a select all · Enter confirm · Tab scope · Esc cancel
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import * as os from "node:os";
@@ -15,7 +15,7 @@ import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agen
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 
 type Scope = "current" | "all";
-type Mode = "list" | "confirm";
+type Mode = "list" | "confirm" | "confirm-unlink";
 
 interface BulkDeleteResult {
 	deleted: number;
@@ -75,20 +75,37 @@ function borderBottom(theme: Theme, totalWidth: number): string {
 	return theme.fg("accent", `╰${"─".repeat(totalWidth - 2)}╯`);
 }
 
-async function deleteSessionFile(sessionPath: string): Promise<{ ok: boolean; method?: "trash" | "unlink"; error?: string }> {
+const TRASH_TIMEOUT_MS = 10_000;
+
+async function trashSessionFile(sessionPath: string): Promise<{ ok: boolean; error?: string }> {
 	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
-	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
-	if (trashResult.status === 0 || !existsSync(sessionPath)) {
-		return { ok: true, method: "trash" };
+	try {
+		await new Promise<void>((resolve, reject) => {
+			const child = spawn("trash", trashArgs, {
+				stdio: ["ignore", "ignore", "pipe"],
+				timeout: TRASH_TIMEOUT_MS,
+			});
+			let stderr = "";
+			child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
+			child.on("error", (err) => reject(err));
+			child.on("close", (code) => {
+				if (code === 0 || !existsSync(sessionPath)) resolve();
+				else reject(new Error(stderr.trim().split("\n")[0] || `trash exited with code ${code}`));
+			});
+		});
+		return { ok: true };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: message };
 	}
+}
+
+async function permanentlyDeleteFile(sessionPath: string): Promise<string | undefined> {
 	try {
 		await unlink(sessionPath);
-		return { ok: true, method: "unlink" };
+		return undefined;
 	} catch (err) {
-		const unlinkError = err instanceof Error ? err.message : String(err);
-		const stderr = trashResult.stderr?.trim();
-		const trashHint = stderr ? `trash: ${stderr.split("\n")[0]}` : trashResult.error?.message;
-		return { ok: false, error: trashHint ? `${unlinkError} (${trashHint})` : unlinkError };
+		return err instanceof Error ? err.message : String(err);
 	}
 }
 
@@ -103,6 +120,7 @@ class BulkDeleteSessionsComponent {
 	private loadProgress: { loaded: number; total: number } | null = null;
 	private statusMessage: string | null = null;
 	private deleting = false;
+	private trashFailedPaths: string[] = [];
 	private readonly maxVisible = 12;
 	private readonly currentSessionPath: string | undefined;
 
@@ -211,17 +229,55 @@ class BulkDeleteSessionsComponent {
 			return;
 		}
 		this.deleting = true;
+		this.statusMessage = null;
+		this.refresh();
+
+		// Phase 1: try trash for all selected sessions
+		const trashResults = await Promise.all(
+			paths.map(async (path) => {
+				const result = await trashSessionFile(path);
+				return { path, ok: result.ok, error: result.error };
+			}),
+		);
+
+		const trashOk = trashResults.filter((r) => r.ok);
+		const trashFailed = trashResults.filter((r) => !r.ok);
+
+		for (const result of trashOk) {
+			this.selectedPaths.delete(result.path);
+		}
+
+		// Phase 2: if any trash failures remain, ask user about permanent delete
+		if (trashFailed.length > 0) {
+			this.trashFailedPaths = trashFailed.map((r) => r.path);
+			this.deleting = false;
+			this.mode = "confirm-unlink";
+			this.statusMessage = `trash unavailable for ${trashFailed.length} session(s). Permanently delete?`;
+			this.refresh();
+			return;
+		}
+
+		this.deleting = false;
+		this.done({ deleted: trashOk.length, failed: 0 });
+	}
+
+	private async executePermanentDelete(): Promise<void> {
+		this.deleting = true;
+		this.statusMessage = null;
+		this.refresh();
+
 		let deleted = 0;
 		let failed = 0;
-		for (const path of paths) {
-			const result = await deleteSessionFile(path);
-			if (result.ok) {
+		for (const path of this.trashFailedPaths) {
+			const error = await permanentlyDeleteFile(path);
+			if (error) {
+				failed++;
+			} else {
 				deleted++;
 				this.selectedPaths.delete(path);
-			} else {
-				failed++;
 			}
 		}
+
 		this.deleting = false;
 		this.done({ deleted, failed });
 	}
@@ -237,6 +293,20 @@ class BulkDeleteSessionsComponent {
 			}
 			if (matchesKey(data, Key.enter) || data === "y" || data === "Y") {
 				void this.executeDelete();
+			}
+			return;
+		}
+
+		if (this.mode === "confirm-unlink") {
+			if (matchesKey(data, Key.escape)) {
+				this.mode = "list";
+				this.trashFailedPaths = [];
+				this.statusMessage = "Cancelled permanent delete.";
+				this.refresh();
+				return;
+			}
+			if (matchesKey(data, Key.enter) || data === "y" || data === "Y") {
+				void this.executePermanentDelete();
 			}
 			return;
 		}
@@ -284,7 +354,9 @@ class BulkDeleteSessionsComponent {
 		const title =
 			this.mode === "confirm"
 				? theme.bold("Delete Sessions – Confirm")
-				: theme.bold("Delete Sessions – Multi-select");
+				: this.mode === "confirm-unlink"
+					? theme.bold("Delete Sessions – Permanent Delete")
+					: theme.bold("Delete Sessions – Multi-select");
 		const scopeLabel =
 			this.scope === "current"
 				? theme.fg("accent", "◉ Current folder")
@@ -302,6 +374,20 @@ class BulkDeleteSessionsComponent {
 					"error",
 					truncateToWidth(
 						`Delete ${this.selectedPaths.size} session(s)? Enter/Y confirm · Esc cancel`,
+						width,
+						"…",
+					),
+				),
+			);
+			return lines;
+		}
+
+		if (this.mode === "confirm-unlink") {
+			lines.push(
+				theme.fg(
+					"error",
+					truncateToWidth(
+						`Trash unavailable. Permanently delete ${this.trashFailedPaths.length} session(s)? Enter/Y confirm · Esc cancel`,
 						width,
 						"…",
 					),
@@ -382,6 +468,21 @@ class BulkDeleteSessionsComponent {
 					borderRow(
 						theme,
 						theme.fg("dim", `  … and ${this.selectedPaths.size - this.maxVisible} more`),
+						boxWidth,
+					),
+				);
+			}
+		} else if (this.mode === "confirm-unlink") {
+			for (const path of this.trashFailedPaths.slice(0, this.maxVisible)) {
+				const session = this.sessions.find((s) => s.path === path);
+				const label = session ? (session.name ?? session.firstMessage).slice(0, 60) : shortenPath(path);
+				lines.push(borderRow(theme, theme.fg("error", `  ⚠ ${label}`), boxWidth));
+			}
+			if (this.trashFailedPaths.length > this.maxVisible) {
+				lines.push(
+					borderRow(
+						theme,
+						theme.fg("dim", `  … and ${this.trashFailedPaths.length - this.maxVisible} more`),
 						boxWidth,
 					),
 				);

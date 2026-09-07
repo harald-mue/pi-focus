@@ -1,7 +1,7 @@
 # Current state
 
 - Updated: 2026-08-12
-- Validated with Pi: 0.84.1
+- Validated with Pi: 0.85.1
 
 ## Layout
 
@@ -22,6 +22,7 @@ The dashboard appears at 110×28 or larger. A growing input area remains anchore
 - Right-click on the input row: open the native terminal context menu
 - Ctrl+V: Pi clipboard paste action
 - F2, Alt+M, or `/focus`: toggle dashboard
+- `/wheel-scroll`: toggle arrow/page-key transcript scrolling while the editor is empty (default off)
 - Ctrl+Z: suspend Pi
 
 ## Dashboard
@@ -45,5 +46,5 @@ The dashboard reports session/project identity, provider and model, supported qu
 - Layout attachment depends on Pi's current seven-container root structure.
 - Clipboard access depends on Pi's bundled native clipboard package and desktop clipboard availability.
 - Shift+Enter depends on terminal modifier reporting. It works in Ghostty; KGX/VTE sends plain Enter instead, so use Ctrl+J there.
-- Pi Focus disables fullscreen mouse reporting after startup so VTE/KGX can open its native right-click context menu. Consequently, mouse-wheel transcript scrolling and application-owned drag selection are unavailable; use keyboard scrolling and the terminal context menu instead.
+- Fullscreen mouse reporting stays enabled so the transcript ScrollView receives wheel events. On Linux, Pi Focus wraps Pi's right-click-paste handler so the terminal context menu's Paste action inserts into the editor.
 - Restart Pi after changing layout or session-lifecycle code.

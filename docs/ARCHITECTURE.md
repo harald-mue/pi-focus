@@ -21,9 +21,9 @@ The dashboard is 48 columns wide with a two-column gap. It is visible only at 11
 
 ## Scrolling and selection
 
-The transcript is the primary `ScrollView`, follows the latest output by default, and uses contained overscroll. Ctrl+Shift+↑/↓ calls `scrollBy()` directly in three-row steps while editor focus remains unchanged. Mouse-wheel routing is intentionally unavailable while native terminal context-menu mode disables mouse reporting.
+The transcript is the primary `ScrollView`, follows the latest output by default, and uses contained overscroll. Ctrl+Shift+↑/↓ calls `scrollBy()` directly in three-row steps while editor focus remains unchanged. When the editor is empty and wheel-fallback mode is enabled (default off, toggle with `/wheel-scroll`), arrow and page keys are also routed to the transcript.
 
-Pi's fullscreen renderer owns alternate-screen lifecycle and terminal cleanup. Pi Focus disables its mouse-reporting modes after startup so the terminal can own right-click context menus; it does not patch `tui.render` or enter a second alternate screen.
+Pi's fullscreen renderer owns alternate-screen lifecycle and terminal cleanup.
 
 ## Input and clipboard
 
@@ -31,7 +31,11 @@ Pi's fullscreen renderer owns alternate-screen lifecycle and terminal cleanup. P
 
 Shift+Enter inserts a newline when the terminal reports the modifier distinctly, as Ghostty does. KGX/VTE emits the same input as plain Enter, so Pi Focus cannot distinguish the keys there; Ctrl+J is the newline fallback. Ctrl+Shift+M is intentionally not registered because Ctrl+M can alias Enter in legacy terminal input.
 
-Pi Focus does not intercept or emulate right-click paste. Fullscreen mouse reporting would still prevent VTE/KGX from seeing the click, so Pi Focus explicitly disables terminal mouse-reporting modes after fullscreen startup. This restores the native terminal context menu at the cost of fullscreen mouse-wheel scrolling and application-owned drag selection.
+### Mouse reporting and right-click paste
+
+Pi Focus keeps fullscreen mouse reporting enabled so the transcript ScrollView receives wheel events. On Linux, it wraps Pi's built-in right-click-paste handler to respond to button-2 release events, enabling paste from the terminal context menu without relying on native terminal mouse-reporting bypass.
+
+Consequence: mouse-wheel transcript scrolling and application-owned drag selection work as in Pi's default fullscreen mode. Right-click paste is handled by the extension rather than by the terminal directly.
 
 ## Session lifecycle
 
@@ -58,4 +62,4 @@ Provider quota refreshes are generation-guarded so late responses from an old pr
 
 ## Compatibility boundary
 
-The extension currently targets Pi 0.84.1. It requires a viewport-capable fullscreen TUI and Pi's seven expected root containers. If either condition is missing, Pi Focus reports a warning and does not attach the custom fixed layout.
+The extension currently targets Pi 0.85.1. It requires a viewport-capable fullscreen TUI and Pi's seven expected root containers. If either condition is missing, Pi Focus reports a warning and does not attach the custom fixed layout.

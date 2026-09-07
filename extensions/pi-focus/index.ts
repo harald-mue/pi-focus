@@ -303,6 +303,7 @@ interface FocusState {
 	recent: Activity[];
 	requestActivity: RequestActivity;
 	provider: ProviderState;
+	wheelFallbackEnabled: boolean;
 }
 
 interface SystemInfo {
@@ -496,6 +497,7 @@ class FocusEditor extends CustomEditor {
 		private readonly onViewportInput: (data: string) => boolean,
 		private readonly onWheelFallbackInput: (data: string) => boolean,
 		private readonly onToggleDashboard: () => void,
+		private readonly wheelFallbackEnabled: () => boolean,
 	) {
 		super(tui, theme, keybindings, { paddingX: 1, autocompleteMaxVisible: 8 });
 	}
@@ -518,11 +520,11 @@ class FocusEditor extends CustomEditor {
 			this.onToggleDashboard();
 			return;
 		}
-		// When mouse reporting is unavailable, some terminals emulate the wheel as
-		// arrow/page keys. Route those to the transcript while the prompt is empty
-		// so they do not browse editor history instead of scrolling the conversation.
+		// When wheel-fallback is enabled, route arrow/page keys to the transcript
+		// while the prompt is empty instead of navigating editor history.
 		if (
 			this.usesManagedLayout()
+			&& this.wheelFallbackEnabled()
 			&& !this.isShowingAutocomplete()
 			&& this.isEditorEmpty()
 			&& isWheelFallbackScrollKey(data)
@@ -740,7 +742,7 @@ class ControlCenter {
 		const footer = [
 			row(theme.fg("dim", truncateToWidth(this.cwd, contentWidth, "…"))),
 			row(theme.fg("dim", "Wheel / Ctrl+Shift+↑↓ scroll · Right-click paste")),
-			row(theme.fg("dim", "F2, Alt+M, /focus  hide")),
+			row(theme.fg("dim", `F2, Alt+M, /focus  hide${this.state.wheelFallbackEnabled ? "" : "  · /wheel-scroll on"}`)),
 		];
 		const bodyLimit = Math.max(0, targetHeight - footer.length);
 		if (lines.length > bodyLimit) lines.length = bodyLimit;
@@ -795,9 +797,11 @@ export default function piFocus(pi: ExtensionAPI) {
 			quotaMetrics: [],
 			rateMetrics: [],
 		},
+		wheelFallbackEnabled: false,
 	};
 	let requestRender: (() => void) | undefined;
 	let dashboardVisible = true;
+	let wheelFallbackEnabled = false;
 	let providerRefreshGeneration = 0;
 	let transcriptScrollView: ScrollView | undefined;
 	let chromeTui: TUI | undefined;
@@ -1082,6 +1086,7 @@ export default function piFocus(pi: ExtensionAPI) {
 				(data) => scrollTranscriptByKeyboard(data, transcriptScrollView),
 				(data) => scrollTranscriptByWheelFallback(data, transcriptScrollView),
 				() => void toggleDashboard(ctx),
+				() => wheelFallbackEnabled,
 			);
 		});
 
@@ -1267,6 +1272,17 @@ export default function piFocus(pi: ExtensionAPI) {
 	pi.registerCommand("focus", {
 		description: "Toggle the passive Pi Focus dashboard",
 		handler: async (_args, ctx) => toggleDashboard(ctx),
+	});
+	pi.registerCommand("wheel-scroll", {
+		description: "Toggle arrow/page-key transcript scrolling while the editor is empty",
+		handler: async (_args, ctx) => {
+			wheelFallbackEnabled = !wheelFallbackEnabled;
+			state.wheelFallbackEnabled = wheelFallbackEnabled;
+			await ctx.ui.notify(
+				wheelFallbackEnabled ? "Wheel-fallback scrolling enabled" : "Wheel-fallback scrolling disabled",
+				"info",
+			);
+		},
 	});
 	// The editor intercepts these keys directly because focused editor input can
 	// take precedence over extension-level shortcuts. Do not bind Ctrl+Shift+M:

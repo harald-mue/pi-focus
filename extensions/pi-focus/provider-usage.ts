@@ -172,6 +172,10 @@ export async function fetchOpenAICodexQuota(ctx: ExtensionContext): Promise<Prov
 	}
 	const rateLimit = asRecord(data.rate_limit);
 	const primary = asRecord(rateLimit?.primary_window);
+	const secondary = asRecord(rateLimit?.secondary_window);
+	const weeklyUsedPercent = finiteNumber(secondary?.used_percent);
+	const weeklyWindowSeconds = finiteNumber(secondary?.limit_window_seconds);
+
 	const usedPercent = finiteNumber(primary?.used_percent);
 	const windowSeconds = finiteNumber(primary?.limit_window_seconds);
 	if (usedPercent !== undefined) {
@@ -184,6 +188,18 @@ export async function fetchOpenAICodexQuota(ctx: ExtensionContext): Promise<Prov
 			label: "Remaining",
 			value: `${Math.max(0, 100 - usedPercent).toFixed(0)}%`,
 			tone: quotaTone(usedPercent),
+		});
+	}
+	// Show weekly/secondary window (e.g. 7-day limit) when it differs from primary.
+	if (
+		weeklyUsedPercent !== undefined
+		&& weeklyWindowSeconds !== undefined
+		&& weeklyWindowSeconds !== windowSeconds
+	) {
+		metrics.push({
+			label: "Weekly",
+			value: `${weeklyUsedPercent.toFixed(0)}% · ${formatQuotaWindow(weeklyWindowSeconds)}`,
+			tone: quotaTone(weeklyUsedPercent),
 		});
 	}
 	const resetAfter = finiteNumber(primary?.reset_after_seconds);

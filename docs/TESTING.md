@@ -56,15 +56,15 @@ There must be no `Rendered line ... exceeds terminal width` error or new crash l
 
 1. Resume a session long enough to fill the viewport.
 2. Verify Ctrl+Shift+↑/↓ moves history by three rows without moving editor focus.
-3. Verify mouse-wheel and application-owned drag selection are inactive while native context-menu mode is enabled.
+3. Verify mouse-wheel scrolling works in the transcript (mouse reporting stays enabled).
+4. With `/wheel-scroll` enabled (toggle with the command), verify ↑↓ and PageUp/PageDown scroll the transcript when the editor is empty. With `/wheel-scroll` disabled (default), verify they navigate the editor prompt history instead.
 
 ## Clipboard paste
 
-
 1. Test ordinary terminal bracketed paste into the editor.
 2. Press Ctrl+V with text in the system clipboard.
-3. In VTE/KGX, right-click once in the input box and verify the native terminal context menu opens; choose Paste and verify insertion.
-4. Right-click transcript, dashboard, and footer; Pi Focus must not consume the click or perform extension-emulated paste.
+3. Right-click once in the input box; Pi Focus wraps Pi's right-click-paste handler on Linux so paste inserts into the editor.
+4. Right-click transcript, dashboard, and footer; Pi Focus must not crash or show its own dialog.
 5. Test multiline text and content above Pi's paste-marker threshold.
 6. Repeat after `/resume` and `/reload`.
 
@@ -86,7 +86,7 @@ Acceptance target: median below 25 ms.
 After normal exit, suspend/resume, session replacement, and reload, verify:
 
 - alternate screen is left correctly
-- mouse reporting remains disabled while Pi Focus is active and terminal modes are restored on exit
-- bracketed paste, canonical input mode, and echo are restored
+- mouse reporting, bracketed paste, canonical input mode, and echo are restored
+- no lingering terminal modes remain set
 - no viewport-input wrapper is installed
 - crash-log modification time is unchanged

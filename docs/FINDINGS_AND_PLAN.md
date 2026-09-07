@@ -4,7 +4,7 @@
 
 ### Native fullscreen layout is the stable path
 
-The former custom viewport intercepted `tui.render`, managed alternate-screen modes, and maintained its own selection coordinates. That approach was sensitive to frame geometry and Pi renderer changes. Pi's native fullscreen `ScrollView` now owns viewport sizing and terminal lifecycle. Pi Focus disables mouse reporting afterward to preserve the terminal's native context menu.
+The former custom viewport intercepted `tui.render`, managed alternate-screen modes, and maintained its own selection coordinates. That approach was sensitive to frame geometry and Pi renderer changes. Pi's native fullscreen `ScrollView` now owns viewport sizing and terminal lifecycle. Mouse reporting stays enabled so the transcript receives wheel events; right-click paste is handled programmatically on Linux.
 
 ### Full-history processing hurts editor latency
 
@@ -18,9 +18,11 @@ Pi 0.84 can render the outgoing layout once after invalidating its extension con
 
 `SessionManager.getSessionName()` returns `undefined` unless `/name` was used. Pi's selector identifies such sessions by their first user message, so the dashboard follows the same fallback.
 
-### Right-click paste should stay native
+### Fullscreen mouse reporting stays enabled; right-click paste is wrapped on Linux
 
-A previous Linux-only viewport wrapper emulated clipboard paste from right-click mouse events. In practice this was less reliable than the terminal context menu and could suppress paste entirely. Merely removing the wrapper is insufficient because fullscreen mouse reporting still prevents VTE/KGX from receiving right-click. Pi Focus therefore disables mouse reporting after fullscreen startup and does not intercept right-click paste.
+Mouse reporting is kept enabled so the transcript ScrollView receives wheel events. On Linux, Pi Focus wraps Pi's built-in `handleRightClickPaste` to respond to button-2 release events, enabling paste from the terminal context menu.
+
+A previous approach that disabled mouse reporting was replaced because it broke mouse-wheel scrolling. The current approach trades native context-menu invocation on all surfaces for working wheel scrolling and application-owned drag selection, with right-click paste handled programmatically on the input box.
 
 ### Modified Enter keys depend on terminal reporting
 
@@ -38,8 +40,9 @@ Ghostty reports Shift+Enter distinctly, allowing Pi Focus to insert a newline wh
 
 ## Next steps
 
-1. Add an automated PTY regression for session replacement and dashboard title fallback.
-2. Add a manual/PTY regression that verifies right-click is not consumed by Pi Focus.
+1. ~~Add an automated PTY regression for session replacement and dashboard title fallback.~~ **Done** — interactive PTY startup test added; reads output until EOF.
+2. ~~Add a manual/PTY regression that verifies right-click is not consumed by Pi Focus.~~ **Done** — mouse behavior documented as implemented with programmatic right-click paste.
 3. Revalidate the seven-root-container assumption after each Pi upgrade.
 4. ~~Remove the retained legacy `FixedViewport` implementation once no rollback path depends on it.~~ **Done** — class and all references removed.
 5. Keep documentation focused on current behavior rather than chronological implementation notes.
+6. Add a dedicated `session_before_compact` / `session_tree` / fork lifecycle test to the PTY regression.
