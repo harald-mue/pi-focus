@@ -54,7 +54,7 @@ Each replacement `session_start` installs fresh chrome for the new runtime. Shut
 The dashboard shows:
 
 - session title, project, and current phase
-- provider/model plus supported quota and rate-limit information
+- provider/model plus supported quota and rate-limit information (Copilot, Codex, and Cursor)
 - Git branch, tracking, latest commit, stash, and working-tree state
 - current request, active tools, and recent tool durations
 

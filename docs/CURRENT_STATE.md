@@ -27,7 +27,7 @@ The dashboard appears at 110×28 or larger. A growing input area remains anchore
 
 ## Dashboard
 
-The dashboard reports session/project identity, provider and model, supported quota/rate data, Git status, request timing, and tool activity. Named sessions use their explicit name; unnamed resumed sessions use their first user message instead of `new session`.
+The dashboard reports session/project identity, provider and model, supported quota/rate data (including Cursor plan, team spend, and on-demand status when a desktop session or Team Admin API key is available), Git status, request timing, and tool activity. Named sessions use their explicit name; unnamed resumed sessions use their first user message instead of `new session`.
 
 ## Session behavior
 

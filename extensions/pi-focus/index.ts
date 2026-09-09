@@ -27,6 +27,7 @@ import {
 
 import {
 	fetchCopilotQuota,
+	fetchCursorQuota,
 	fetchOpenAICodexQuota,
 	rateLimitMetrics,
 	titleCase,
@@ -854,7 +855,9 @@ export default function piFocus(pi: ExtensionAPI) {
 			return;
 		}
 
-		const supportsQuota = providerId === "github-copilot" || providerId === "openai-codex";
+		const supportsQuota = providerId === "github-copilot"
+			|| providerId === "openai-codex"
+			|| providerId === "cursor";
 		const previousMetrics = sameProvider ? state.provider.quotaMetrics : [];
 		const previousRateMetrics = sameProvider ? state.provider.rateMetrics : [];
 		const generation = ++providerRefreshGeneration;
@@ -863,7 +866,7 @@ export default function piFocus(pi: ExtensionAPI) {
 			name: ctx.modelRegistry.getProviderDisplayName(providerId) || titleCase(providerId),
 			model: model.id,
 			quotaStatus: supportsQuota ? (previousMetrics.length > 0 ? "available" : "loading") : "unsupported",
-			quotaMessage: providerId === "cursor" ? "Use Cursor dashboard" : "Not exposed by provider",
+			quotaMessage: "Not exposed by provider",
 			quotaMetrics: previousMetrics,
 			rateMetrics: previousRateMetrics,
 			updatedAt: sameProvider ? state.provider.updatedAt : undefined,
@@ -874,7 +877,9 @@ export default function piFocus(pi: ExtensionAPI) {
 		try {
 			const quotaMetrics = providerId === "github-copilot"
 				? await fetchCopilotQuota()
-				: await fetchOpenAICodexQuota(ctx);
+				: providerId === "openai-codex"
+					? await fetchOpenAICodexQuota(ctx)
+					: await fetchCursorQuota(ctx);
 			if (generation !== providerRefreshGeneration || ctx.model?.provider !== providerId) return;
 			state.provider.quotaMetrics = quotaMetrics;
 			state.provider.quotaStatus = quotaMetrics.length > 0 ? "available" : "unsupported";

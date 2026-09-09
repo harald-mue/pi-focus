@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -54,10 +55,31 @@ function formatQuotaWindow(seconds: number): string {
 }
 
 function formatResetDate(value: unknown): string | undefined {
-	if (typeof value !== "string" || !value) return undefined;
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return undefined;
-	return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+	if (typeof value === "number" && Number.isFinite(value)) {
+		const millis = value > 1e12 ? value : value * 1000;
+		const date = new Date(millis);
+		if (Number.isNaN(date.getTime())) return undefined;
+		return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+	}
+	if (typeof value === "string" && value) {
+		if (/^\d+$/.test(value)) return formatResetDate(Number(value));
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return undefined;
+		return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+	}
+	return undefined;
+}
+
+function formatUsd(dollars: number): string {
+	if (!Number.isFinite(dollars)) return "?";
+	return `$${dollars.toLocaleString("en-US", {
+		minimumFractionDigits: Number.isInteger(dollars) ? 0 : 2,
+		maximumFractionDigits: 2,
+	})}`;
+}
+
+function formatUsdFromCents(cents: number): string {
+	return formatUsd(cents / 100);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -90,15 +112,242 @@ function readStoredOAuthCredential(provider: string): Record<string, unknown> | 
 	}
 }
 
-async function fetchJson(url: string, headers: Record<string, string>): Promise<Record<string, unknown>> {
+async function fetchJson(
+	url: string,
+	headers: Record<string, string>,
+	init?: { method?: string; body?: string },
+): Promise<Record<string, unknown>> {
 	const response = await fetch(url, {
+		method: init?.method,
 		headers,
+		body: init?.body,
 		signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
 	});
 	if (!response.ok) throw new Error(`HTTP ${response.status}`);
 	const data = asRecord(await response.json());
 	if (!data) throw new Error("Invalid provider response");
 	return data;
+}
+
+function cursorStateDbPath(): string | undefined {
+	const home = homedir();
+	const candidates = [
+		process.env.CURSOR_CONFIG_DIR
+			? join(process.env.CURSOR_CONFIG_DIR, "User/globalStorage/state.vscdb")
+			: "",
+		join(home, ".config/Cursor/User/globalStorage/state.vscdb"),
+		join(home, "Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
+		process.env.APPDATA ? join(process.env.APPDATA, "Cursor/User/globalStorage/state.vscdb") : "",
+	];
+	return candidates.find((path) => path.length > 0 && existsSync(path));
+}
+
+async function readCursorDesktopSession(): Promise<{
+	token: string;
+	email?: string;
+	teamId?: number;
+	teamName?: string;
+} | undefined> {
+	const dbPath = cursorStateDbPath();
+	if (!dbPath) return undefined;
+	try {
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(dbPath, { readOnly: true });
+		try {
+			const get = (key: string): string | undefined => {
+				const row = db.prepare("SELECT value FROM ItemTable WHERE key = ?").get(key) as
+					| { value?: string | Uint8Array }
+					| undefined;
+				if (!row?.value) return undefined;
+				return typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
+			};
+			const token = get("cursorAuth/accessToken");
+			if (!token) return undefined;
+			const payload = decodeJwtPayload(token);
+			const exp = finiteNumber(payload?.exp);
+			if (exp !== undefined && exp * 1000 <= Date.now()) {
+				throw new Error("Cursor desktop session expired");
+			}
+			const teamRaw = get("cursorAuth/cachedTeam");
+			let team: Record<string, unknown> | undefined;
+			if (teamRaw) {
+				try {
+					team = asRecord(JSON.parse(teamRaw));
+				} catch {
+					team = undefined;
+				}
+			}
+			const teamId = finiteNumber(team?.teamId);
+			return {
+				token,
+				email: get("cursorAuth/cachedEmail"),
+				teamId,
+				teamName: typeof team?.name === "string" ? team.name : undefined,
+			};
+		} finally {
+			db.close();
+		}
+	} catch (error) {
+		if (error instanceof Error && error.message === "Cursor desktop session expired") throw error;
+		return undefined;
+	}
+}
+
+async function fetchCursorDashboardJson(
+	token: string,
+	method: string,
+	body: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+	return fetchJson(
+		`https://api2.cursor.sh/aiserver.v1.DashboardService/${method}`,
+		{
+			Accept: "application/json",
+			Authorization: `Bearer ${token}`,
+			"Content-Type": "application/json",
+			"Connect-Protocol-Version": "1",
+		},
+		{ method: "POST", body: JSON.stringify(body) },
+	);
+}
+
+function cursorSpendMetrics(
+	member: Record<string, unknown>,
+	extras: {
+		planName?: string;
+		teamName?: string;
+		onDemandAllowed?: boolean;
+		reset?: string;
+	},
+): ProviderMetric[] {
+	const metrics: ProviderMetric[] = [];
+	if (extras.planName) metrics.push({ label: "Plan", value: extras.planName, tone: "text" });
+	if (extras.teamName) metrics.push({ label: "Team", value: extras.teamName, tone: "muted" });
+	const spendCents = finiteNumber(member.overallSpendCents) ?? finiteNumber(member.spendCents) ?? 0;
+	const onDemandCents = finiteNumber(member.spendCents);
+	const limitDollars =
+		finiteNumber(member.effectivePerUserLimitDollars)
+		?? finiteNumber(member.monthlyLimitDollars)
+		?? finiteNumber(member.hardLimitOverrideDollars);
+	if (limitDollars !== undefined && limitDollars > 0) {
+		const usedPercent = (spendCents / 100 / limitDollars) * 100;
+		metrics.push({
+			label: "Usage",
+			value: `${formatUsdFromCents(spendCents)} / ${formatUsd(limitDollars)}`,
+			tone: quotaTone(usedPercent),
+		});
+		metrics.push({
+			label: "Remaining",
+			value: formatUsd(Math.max(0, limitDollars - spendCents / 100)),
+			tone: quotaTone(usedPercent),
+		});
+	} else {
+		metrics.push({ label: "Usage", value: formatUsdFromCents(spendCents), tone: "muted" });
+	}
+	if (extras.onDemandAllowed === false) {
+		metrics.push({ label: "On-demand", value: "Off", tone: "muted" });
+	} else if (onDemandCents !== undefined) {
+		metrics.push({
+			label: "On-demand",
+			value: formatUsdFromCents(onDemandCents),
+			tone: onDemandCents > 0 ? "accent" : "muted",
+		});
+	}
+	if (extras.reset) metrics.push({ label: "Reset", value: extras.reset, tone: "muted" });
+	return metrics;
+}
+
+async function fetchCursorQuotaFromDesktopSession(): Promise<ProviderMetric[]> {
+	const session = await readCursorDesktopSession();
+	if (!session) throw new Error("Cursor desktop session unavailable");
+	const teamBody = session.teamId !== undefined ? { teamId: session.teamId } : {};
+	const [plan, hardLimit, spend] = await Promise.all([
+		fetchCursorDashboardJson(session.token, "GetPlanInfo", teamBody),
+		fetchCursorDashboardJson(session.token, "GetHardLimit", teamBody),
+		session.email
+			? fetchCursorDashboardJson(session.token, "GetTeamSpend", {
+				...teamBody,
+				searchTerm: session.email,
+				page: 1,
+				pageSize: 10,
+			}).catch(() => ({} as Record<string, unknown>))
+			: Promise.resolve({} as Record<string, unknown>),
+	]);
+	const planInfo = asRecord(plan.planInfo);
+	const members = Array.isArray(spend.teamMemberSpend) ? spend.teamMemberSpend : [];
+	const member = members
+		.map((value) => asRecord(value))
+		.find((entry) => {
+			if (!entry) return false;
+			if (!session.email) return true;
+			return typeof entry.email === "string" && entry.email.toLowerCase() === session.email.toLowerCase();
+		});
+	if (!member) {
+		const metrics: ProviderMetric[] = [];
+		if (typeof planInfo?.planName === "string") {
+			metrics.push({ label: "Plan", value: planInfo.planName, tone: "text" });
+		}
+		if (session.teamName) metrics.push({ label: "Team", value: session.teamName, tone: "muted" });
+		if (hardLimit.noUsageBasedAllowed === true) {
+			metrics.push({ label: "On-demand", value: "Off", tone: "muted" });
+		}
+		const reset = formatResetDate(spend.nextCycleStart ?? planInfo?.billingCycleEnd);
+		if (reset) metrics.push({ label: "Reset", value: reset, tone: "muted" });
+		if (metrics.length === 0) throw new Error("No quota data");
+		return metrics;
+	}
+	return cursorSpendMetrics(member, {
+		planName: typeof planInfo?.planName === "string" ? planInfo.planName : undefined,
+		teamName: session.teamName,
+		onDemandAllowed: hardLimit.noUsageBasedAllowed === true ? false : undefined,
+		reset: formatResetDate(spend.nextCycleStart ?? planInfo?.billingCycleEnd),
+	});
+}
+
+async function fetchCursorQuotaFromApiKey(ctx: ExtensionContext): Promise<ProviderMetric[]> {
+	const resolved = await ctx.modelRegistry.getProviderAuth("cursor");
+	const token = resolved?.auth.apiKey;
+	if (!token) throw new Error("API credential unavailable");
+	const me = await fetchJson("https://api.cursor.com/v1/me", {
+		Accept: "application/json",
+		Authorization: `Bearer ${token}`,
+	});
+	const email = typeof me.userEmail === "string" ? me.userEmail : undefined;
+	const spend = await fetchJson(
+		"https://api.cursor.com/teams/spend",
+		{
+			Accept: "application/json",
+			Authorization: `Bearer ${token}`,
+			"Content-Type": "application/json",
+		},
+		{
+			method: "POST",
+			body: JSON.stringify({
+				searchTerm: email,
+				page: 1,
+				pageSize: 10,
+			}),
+		},
+	);
+	const members = Array.isArray(spend.teamMemberSpend) ? spend.teamMemberSpend : [];
+	const member = members
+		.map((value) => asRecord(value))
+		.find((entry) => {
+			if (!entry) return false;
+			if (!email) return true;
+			return typeof entry.email === "string" && entry.email.toLowerCase() === email.toLowerCase();
+		});
+	if (!member) throw new Error("Team spend unavailable for this API key");
+	return cursorSpendMetrics(member, {
+		reset: formatResetDate(spend.nextCycleStart ?? spend.subscriptionCycleStart),
+	});
+}
+
+export async function fetchCursorQuota(ctx: ExtensionContext): Promise<ProviderMetric[]> {
+	try {
+		return await fetchCursorQuotaFromDesktopSession();
+	} catch {
+		return fetchCursorQuotaFromApiKey(ctx);
+	}
 }
 
 export async function fetchCopilotQuota(): Promise<ProviderMetric[]> {
