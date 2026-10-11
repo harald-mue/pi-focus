@@ -2,44 +2,38 @@
 
 ## Fullscreen layout
 
-Pi Focus builds on Pi's native fullscreen renderer. The layout root is an `HStack` with a flexible workspace and an optional fixed-width dashboard:
+Pi 1.1.0 already builds a chat viewport: a primary transcript `ScrollView` plus a fixed bottom dock (pending, status, widgets, editor, footer). Pi Focus leaves that tree intact and wraps it:
 
 ```text
-┌──────────────────────── left workspace ────────────────────────┬─ dashboard ─┐
-│ optional auto-hiding header                                    │             │
-│ ┌──────────────── transcript ScrollView ─────────────────────┐ │ session     │
-│ │ loaded resources and conversation                         │ │ provider    │
-│ │                                                          │ │ repository  │
-│ └────────────────────────────────────────────────────────────┘ │ activity    │
-│ pending/status/widgets/editor/footer dock                      │             │
-└────────────────────────────────────────────────────────────────┴─────────────┘
+┌── Pi native viewport ───────────────────────────────────────────┬─ dashboard ─┐
+│ transcript ScrollView (header + resources + chat)     │            │
+│ dock: pending / status / widgets / editor / footer     │            │
+└──────────────────────────────────────────────────────┴────────────┘
 ```
 
-The workspace is a `VStack` containing the header, a growing transcript `ScrollView`, and an intrinsic-height bottom dock. A wrapped editor or autocomplete menu grows upward and reduces only the transcript height.
+The dashboard is 48 columns wide with a two-column gap. It is visible only at 110×28 or larger and can be toggled with Alt+M or `/focus`.
 
-The dashboard is 48 columns wide with a two-column gap. It is visible only at 110×28 or larger and can be toggled with F2, Alt+M, or `/focus`.
+If the TUI is not viewport-capable or no primary `ScrollView` is found on the native layout root, Pi Focus reports a warning and does not attach the dashboard.
+
+On `session_shutdown` the previous native layout root is restored so `/reload` and session replacement do not nest `HStack` wrappers.
 
 ## Scrolling and selection
 
-The transcript is the primary `ScrollView`, follows the latest output by default, and uses contained overscroll. Ctrl+Shift+↑/↓ calls `scrollBy()` directly in three-row steps while editor focus remains unchanged. When the editor is empty and wheel-fallback mode is enabled (default off, toggle with `/wheel-scroll`), arrow and page keys are also routed to the transcript.
+Pi owns transcript keyboard scrolling (`PageUp`/`PageDown`, `Ctrl+Home`/`Ctrl+End`, prompt jump, search, jump-to-latest). Pi Focus does not unbind those actions. `/wheel-scroll` is an optional extra that routes arrow/page keys to the transcript while the editor is empty.
 
-Pi's fullscreen renderer owns alternate-screen lifecycle and terminal cleanup.
+Pi's fullscreen renderer owns alternate-screen lifecycle, mouse reporting, wheel acceleration, and selection.
 
 ## Input and clipboard
 
-`FocusEditor` extends Pi's `CustomEditor`, preserving app-level actions and autocomplete while applying Pi Focus styling. Normal terminal bracketed paste and Pi's Ctrl+V clipboard action continue through `CustomEditor`.
+`FocusEditor` extends Pi's `CustomEditor` with `embedWorkingStatus: true`. App actions, autocomplete, Shift+Enter/Ctrl+J newlines, and Ctrl+V clipboard paste go through `super.handleInput()`.
 
-Shift+Enter inserts a newline when the terminal reports the modifier distinctly, as Ghostty does. KGX/VTE emits the same input as plain Enter, so Pi Focus cannot distinguish the keys there; Ctrl+J is the newline fallback. Ctrl+Shift+M is intentionally not registered because Ctrl+M can alias Enter in legacy terminal input.
+Ctrl+V is Pi's `app.clipboard.pasteImage` action: files (macOS), images via a temp file, then plain text. Bracketed paste continues through the editor.
 
-### Mouse reporting and right-click paste
-
-Pi Focus keeps fullscreen mouse reporting enabled so the transcript ScrollView receives wheel events. On Linux, it wraps Pi's built-in right-click-paste handler to respond to button-2 release events, enabling paste from the terminal context menu without relying on native terminal mouse-reporting bypass.
-
-Consequence: mouse-wheel transcript scrolling and application-owned drag selection work as in Pi's default fullscreen mode. Right-click paste is handled by the extension rather than by the terminal directly.
+Pi wires right-click paste only on Windows. On Linux, Pi Focus wraps `handleRightClickPaste` so button-2 still calls Pi's clipboard paste into the focused editor.
 
 ## Session lifecycle
 
-Pi invalidates an extension context before replacing a session. The previous layout may render once during that transition, so fixed chrome must not access a captured context or session manager. The footer and `ControlCenter` render only from plain snapshots captured by active lifecycle handlers, plus TUI-owned footer data.
+Pi invalidates an extension context before replacing a session. Fixed chrome must not access a captured context or session manager during `render()`. The footer and `ControlCenter` render only from plain snapshots.
 
 The dashboard title is resolved as follows:
 
@@ -47,19 +41,20 @@ The dashboard title is resolved as follows:
 2. first user message on the active branch
 3. `new session`
 
-Each replacement `session_start` installs fresh chrome for the new runtime. Shutdown restores temporary input wrapping and extension styling before the old runtime becomes stale.
+Each replacement `session_start` installs fresh chrome for the new runtime.
 
 ## Dashboard data
 
 The dashboard shows:
 
 - session title, project, and current phase
-- provider/model plus supported quota and rate-limit information (Copilot, Codex, and Cursor)
+- provider/model plus supported quota and rate-limit information (Copilot, Codex, and Cursor period usage)
 - Git branch, tracking, latest commit, stash, and working-tree state
-- current request, active tools, and recent tool durations
+- current request, active tools, and recent tool durations (`tool_execution_end.durationMs`)
+- aborted runs from `agent_settled.aborted`
 
 Provider quota refreshes are generation-guarded so late responses from an old provider or session cannot overwrite current state.
 
 ## Compatibility boundary
 
-The extension currently targets Pi 0.85.1. It requires a viewport-capable fullscreen TUI and Pi's seven expected root containers. If either condition is missing, Pi Focus reports a warning and does not attach the custom fixed layout.
+The extension currently targets Pi 1.1.0. It requires a viewport-capable fullscreen TUI and a primary transcript `ScrollView` on Pi's layout root.

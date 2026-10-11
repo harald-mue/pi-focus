@@ -35,6 +35,8 @@
     "dim": "#757575",
     "text": "ink",
     "thinkingText": "textWeak",
+    "scrollbarTrack": "borderSubtle",
+    "scrollbarThumb": "textWeak",
 
     "selectedBg": "element",
     "userMessageBg": "inputSurface",

@@ -14,25 +14,22 @@ Installed copies under `~/.pi/agent/` are deployment targets, not development so
 
 ## Required behavior
 
-- Use Pi's native fullscreen layout; do not replace `tui.render`.
-- Only the transcript `ScrollView` scrolls.
-- Keep the header, dashboard, input area, widgets, and footer fixed.
-- Auto-hide the header after ten seconds.
-- Keep Ctrl+Shift+↑/↓ transcript scrolling.
-- Keep F2, Alt+M, `/focus`, and `/wheel-scroll` synchronized with UI help and documentation. Do not bind Ctrl+Shift+M because Ctrl+M can be encoded as Enter.
-- Preserve Shift+Enter newline handling for Ghostty and other modified-key-capable terminals, plus Ctrl+J as the KGX/VTE fallback.
-- Keep fullscreen mouse reporting enabled so wheel events reach the transcript ScrollView. Wrap Pi's right-click-paste handler on Linux for paste from the terminal context menu.
-- Preserve width safety, the completed-tool accent, and normal-weight tool surfaces.
+- Wrap Pi's native fullscreen layout root; do not rebuild the seven-container tree or replace `tui.render`.
+- Restore the native layout root on session shutdown.
+- Keep the dashboard, input area, widgets, and footer as Pi dock siblings plus the dashboard column.
+- Auto-hide the custom header after ten seconds.
+- Do not unbind Pi transcript actions (`PageUp`/`PageDown`, `Ctrl+Home`/`Ctrl+End`, prompt jump, search).
+- Keep Alt+M, `/focus`, and `/wheel-scroll` synchronized with UI help and documentation. Do not bind Ctrl+Shift+M because Ctrl+M can be encoded as Enter.
+- Leave Shift+Enter and Ctrl+J to Pi (`tui.input.newLine`). Leave Ctrl+V to Pi (`app.clipboard.pasteImage`).
+- Keep fullscreen mouse reporting enabled. Wrap Pi's right-click-paste handler on Linux.
 - Never dereference a captured `ExtensionContext` during rendering after session replacement or reload.
 - For unnamed sessions, use the first user message as the dashboard title.
 
 ## Compatibility
 
-Pi Focus currently targets Pi 0.85.1 and requires `tuiMode=fullscreen`. Layout attachment expects Pi's seven root components in this order: document, pending messages, status, above-editor widgets, editor, below-editor widgets, footer. If this contract changes, show a compatibility warning rather than attaching an overlapping or partial layout.
+Pi Focus currently targets Pi 1.1.0 and requires fullscreen TUI. Layout attachment finds the primary transcript `ScrollView` on Pi's `layoutRoot` and places the dashboard beside it. If this contract changes, show a compatibility warning rather than attaching an overlapping or partial layout.
 
-Pi invalidates extension contexts during `/resume`, `/new`, forks, and `/reload`. Components that may render during teardown must use only safe plain snapshots; captured contexts and session-manager references can be stale. New-session work must use the replacement context supplied by Pi.
-
-Pi Focus keeps fullscreen mouse reporting enabled and wraps Pi's built-in right-click-paste handler on Linux so wheel events reach the transcript and paste works from the terminal context menu. A previous approach that disabled mouse reporting entirely was replaced because it broke mouse-wheel scrolling.
+Pi invalidates extension contexts during `/resume`, `/new`, forks, and `/reload`. Components that may render during teardown must use only safe plain snapshots.
 
 ## Performance
 

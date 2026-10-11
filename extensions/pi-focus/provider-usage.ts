@@ -1,11 +1,135 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_FETCH_TIMEOUT_MS = 10_000;
+
+/** Same page as ChatGPT → Settings → Usage (overview tab). */
+export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage?tab=overview";
+
+const CHATGPT_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+
+function isJwtToken(token: string): boolean {
+	return token.split(".").length === 3;
+}
+
+function chatgptAccountIdFromToken(token: string): string | undefined {
+	const payload = decodeJwtPayload(token);
+	const authClaims = asRecord(payload?.["https://api.openai.com/auth"]);
+	return typeof authClaims?.chatgpt_account_id === "string"
+		? authClaims.chatgpt_account_id
+		: undefined;
+}
+
+function chatgptSessionCookieHeader(): string | undefined {
+	const raw = process.env.CHATGPT_USAGE_SESSION_TOKEN?.trim();
+	if (!raw) return undefined;
+	return raw.includes("=") ? raw : `__Secure-next-auth.session-token=${raw}`;
+}
+
+function parseWhamUsageMetrics(data: Record<string, unknown>): ProviderMetric[] {
+	const metrics: ProviderMetric[] = [];
+	if (typeof data.plan_type === "string") {
+		metrics.push({ label: "Plan", value: titleCase(data.plan_type), tone: "text" });
+	}
+	const rateLimit = asRecord(data.rate_limit);
+	const primary = asRecord(rateLimit?.primary_window);
+	const secondary = asRecord(rateLimit?.secondary_window);
+	const weeklyUsedPercent = finiteNumber(secondary?.used_percent);
+	const weeklyWindowSeconds = finiteNumber(secondary?.limit_window_seconds);
+
+	const usedPercent = finiteNumber(primary?.used_percent);
+	const windowSeconds = finiteNumber(primary?.limit_window_seconds);
+	if (usedPercent !== undefined) {
+		metrics.push({
+			label: "Usage",
+			value: `${usedPercent.toFixed(0)}% · ${formatQuotaWindow(windowSeconds ?? 0)}`,
+			tone: quotaTone(usedPercent),
+		});
+		metrics.push({
+			label: "Remaining",
+			value: `${Math.max(0, 100 - usedPercent).toFixed(0)}%`,
+			tone: quotaTone(usedPercent),
+		});
+	}
+	if (
+		weeklyUsedPercent !== undefined
+		&& weeklyWindowSeconds !== undefined
+		&& weeklyWindowSeconds !== windowSeconds
+	) {
+		metrics.push({
+			label: "Weekly",
+			value: `${weeklyUsedPercent.toFixed(0)}% · ${formatQuotaWindow(weeklyWindowSeconds)}`,
+			tone: quotaTone(weeklyUsedPercent),
+		});
+	}
+	const resetAfter = finiteNumber(primary?.reset_after_seconds);
+	const resetAt = finiteNumber(primary?.reset_at);
+	if (resetAfter !== undefined || resetAt !== undefined) {
+		const seconds = resetAfter ?? Math.max(0, resetAt! - Date.now() / 1000);
+		metrics.push({ label: "Reset", value: formatResetDuration(seconds), tone: "muted" });
+	}
+	const credits = asRecord(data.credits);
+	if (credits?.has_credits === true && typeof credits.balance === "string") {
+		metrics.push({ label: "Credits", value: credits.balance, tone: "accent" });
+	}
+	return metrics;
+}
+
+async function fetchWhamUsage(token: string, accountId?: string): Promise<ProviderMetric[]> {
+	const headers: Record<string, string> = {
+		Accept: "application/json",
+		Authorization: `Bearer ${token}`,
+		"User-Agent": "codex_cli_rs/0.101.0",
+	};
+	if (accountId) headers["chatgpt-account-id"] = accountId;
+	const data = await fetchJson(CHATGPT_WHAM_USAGE_URL, headers);
+	return parseWhamUsageMetrics(data);
+}
+
+async function fetchWhamUsageFromSessionCookie(): Promise<ProviderMetric[]> {
+	const cookie = chatgptSessionCookieHeader();
+	if (!cookie) throw new Error("ChatGPT session cookie unavailable");
+	const data = await fetchJson(CHATGPT_WHAM_USAGE_URL, {
+		Accept: "application/json",
+		Cookie: cookie,
+		"User-Agent": "Mozilla/5.0",
+	});
+	const metrics = parseWhamUsageMetrics(data);
+	if (metrics.length === 0) throw new Error("No usage data");
+	return [{ label: "Source", value: "Browser session", tone: "muted" }, ...metrics];
+}
+
+function chatgptManageUsageMetrics(): ProviderMetric[] {
+	return [
+		{ label: "Auth", value: "ChatGPT plan", tone: "success" },
+		{ label: "Details", value: "chatgpt.com/settings/usage", tone: "accent" },
+		{ label: "Hint", value: "/chatgpt-usage", tone: "dim" },
+	];
+}
+
+export async function openChatGPTUsagePage(): Promise<void> {
+	const { execFile } = await import("node:child_process");
+	const { promisify } = await import("node:util");
+	const execFileAsync = promisify(execFile);
+	const commands: Array<[string, string[]]> = platform() === "darwin"
+		? [["open", [CHATGPT_USAGE_URL]]]
+		: platform() === "win32"
+			? [["cmd", ["/c", "start", "", CHATGPT_USAGE_URL]]]
+			: [["xdg-open", [CHATGPT_USAGE_URL]]];
+	for (const [command, args] of commands) {
+		try {
+			await execFileAsync(command, args);
+			return;
+		} catch {
+			// Try the next opener.
+		}
+	}
+	throw new Error(`Could not open a browser. Visit ${CHATGPT_USAGE_URL}`);
+}
 
 export type MetricTone = "text" | "muted" | "dim" | "accent" | "success" | "warning" | "error";
 
@@ -89,7 +213,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function finiteNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string" && value.trim()) {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : undefined;
+	}
+	return undefined;
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
@@ -129,6 +258,25 @@ async function fetchJson(
 	return data;
 }
 
+function cursorAllowsDesktopCredentials(): boolean {
+	const flag = process.env.PI_CURSOR_SYSTEM_CREDENTIALS?.trim();
+	return flag !== "0" && flag?.toLowerCase() !== "false";
+}
+
+function cursorTokenStillValid(token: string): boolean {
+	const payload = decodeJwtPayload(token);
+	const exp = finiteNumber(payload?.exp);
+	if (exp === undefined) return true;
+	return exp * 1000 > Date.now() + 30_000;
+}
+
+function rememberCursorToken(tokens: string[], seen: Set<string>, token: string | undefined): void {
+	const value = token?.trim();
+	if (!value || seen.has(value) || !cursorTokenStillValid(value)) return;
+	seen.add(value);
+	tokens.push(value);
+}
+
 function cursorStateDbPath(): string | undefined {
 	const home = homedir();
 	const candidates = [
@@ -142,55 +290,48 @@ function cursorStateDbPath(): string | undefined {
 	return candidates.find((path) => path.length > 0 && existsSync(path));
 }
 
-async function readCursorDesktopSession(): Promise<{
-	token: string;
-	email?: string;
-	teamId?: number;
-	teamName?: string;
-} | undefined> {
+async function readCursorDesktopAccessToken(): Promise<string | undefined> {
+	if (!cursorAllowsDesktopCredentials()) return undefined;
 	const dbPath = cursorStateDbPath();
 	if (!dbPath) return undefined;
 	try {
 		const { DatabaseSync } = await import("node:sqlite");
 		const db = new DatabaseSync(dbPath, { readOnly: true });
 		try {
-			const get = (key: string): string | undefined => {
-				const row = db.prepare("SELECT value FROM ItemTable WHERE key = ?").get(key) as
-					| { value?: string | Uint8Array }
-					| undefined;
-				if (!row?.value) return undefined;
-				return typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
-			};
-			const token = get("cursorAuth/accessToken");
-			if (!token) return undefined;
-			const payload = decodeJwtPayload(token);
-			const exp = finiteNumber(payload?.exp);
-			if (exp !== undefined && exp * 1000 <= Date.now()) {
-				throw new Error("Cursor desktop session expired");
-			}
-			const teamRaw = get("cursorAuth/cachedTeam");
-			let team: Record<string, unknown> | undefined;
-			if (teamRaw) {
-				try {
-					team = asRecord(JSON.parse(teamRaw));
-				} catch {
-					team = undefined;
-				}
-			}
-			const teamId = finiteNumber(team?.teamId);
-			return {
-				token,
-				email: get("cursorAuth/cachedEmail"),
-				teamId,
-				teamName: typeof team?.name === "string" ? team.name : undefined,
-			};
+			const row = db.prepare("SELECT value FROM ItemTable WHERE key = ?").get("cursorAuth/accessToken") as
+				| { value?: string | Uint8Array }
+				| undefined;
+			if (!row?.value) return undefined;
+			return typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
 		} finally {
 			db.close();
 		}
-	} catch (error) {
-		if (error instanceof Error && error.message === "Cursor desktop session expired") throw error;
+	} catch {
 		return undefined;
 	}
+}
+
+async function collectCursorAccessTokens(ctx: ExtensionContext): Promise<string[]> {
+	const tokens: string[] = [];
+	const seen = new Set<string>();
+	rememberCursorToken(tokens, seen, process.env.CURSOR_ACCESS_TOKEN);
+
+	const oauth = readStoredOAuthCredential("cursor");
+	const oauthAccess = typeof oauth?.access === "string" ? oauth.access : undefined;
+	const oauthExpires = finiteNumber(oauth?.expires);
+	if (oauthExpires === undefined || oauthExpires > Date.now() + 30_000) {
+		rememberCursorToken(tokens, seen, oauthAccess);
+	}
+
+	try {
+		const resolved = await ctx.modelRegistry.getProviderAuth("cursor");
+		rememberCursorToken(tokens, seen, resolved?.auth.apiKey);
+	} catch {
+		// Provider auth is optional; later sources can still succeed.
+	}
+
+	rememberCursorToken(tokens, seen, await readCursorDesktopAccessToken());
+	return tokens;
 }
 
 async function fetchCursorDashboardJson(
@@ -208,6 +349,91 @@ async function fetchCursorDashboardJson(
 		},
 		{ method: "POST", body: JSON.stringify(body) },
 	);
+}
+
+function cursorPlanName(data: Record<string, unknown>, spendLimit?: Record<string, unknown>): string | undefined {
+	const limitType = typeof spendLimit?.limitType === "string" ? spendLimit.limitType : undefined;
+	if (limitType === "user") return "Pro";
+	if (limitType === "team") return "Team";
+	if (typeof data.membershipType === "string" && data.membershipType) {
+		return titleCase(data.membershipType);
+	}
+	return undefined;
+}
+
+function cursorPercentMetric(label: string, percent: number | undefined): ProviderMetric | undefined {
+	if (percent === undefined) return undefined;
+	return {
+		label,
+		value: `${Math.round(percent)}% used`,
+		tone: quotaTone(percent),
+	};
+}
+
+function cursorPeriodMetrics(data: Record<string, unknown>): ProviderMetric[] {
+	const planUsage = asRecord(data.planUsage);
+	const spendLimit = asRecord(data.spendLimitUsage);
+	const individual = asRecord(data.individualUsage);
+	const plan = planUsage ?? asRecord(individual?.plan);
+	const onDemand = asRecord(individual?.onDemand);
+	const metrics: ProviderMetric[] = [];
+
+	const planName = cursorPlanName(data, spendLimit);
+	if (planName) metrics.push({ label: "Plan", value: planName, tone: "text" });
+	if (data.isUnlimited === true) {
+		metrics.push({ label: "Included", value: "Unlimited", tone: "success" });
+	} else {
+		const included = cursorPercentMetric("Included", finiteNumber(plan?.totalPercentUsed));
+		if (included) metrics.push(included);
+		const usedCents = finiteNumber(plan?.includedSpend) ?? finiteNumber(plan?.used);
+		const limitCents = finiteNumber(plan?.limit);
+		if (usedCents !== undefined && limitCents !== undefined && limitCents > 0) {
+			metrics.push({
+				label: "Spend",
+				value: `${formatUsdFromCents(usedCents)} / ${formatUsdFromCents(limitCents)}`,
+				tone: quotaTone((usedCents / limitCents) * 100),
+			});
+		}
+	}
+
+	const auto = cursorPercentMetric("Auto", finiteNumber(plan?.autoPercentUsed));
+	if (auto) metrics.push(auto);
+	const api = cursorPercentMetric("API", finiteNumber(plan?.apiPercentUsed));
+	if (api) metrics.push(api);
+
+	if (onDemand?.enabled === false) {
+		metrics.push({ label: "On-demand", value: "Off", tone: "muted" });
+	} else {
+		const onDemandUsed = finiteNumber(onDemand?.used);
+		if (onDemandUsed !== undefined) {
+			metrics.push({
+				label: "On-demand",
+				value: formatUsdFromCents(onDemandUsed),
+				tone: onDemandUsed > 0 ? "accent" : "muted",
+			});
+		}
+	}
+
+	const reset = formatResetDate(data.billingCycleEnd);
+	if (reset) metrics.push({ label: "Reset", value: reset, tone: "muted" });
+	return metrics;
+}
+
+async function fetchCursorPeriodUsage(token: string): Promise<ProviderMetric[]> {
+	const metrics = cursorPeriodMetrics(await fetchCursorDashboardJson(token, "GetCurrentPeriodUsage"));
+	if (metrics.length === 0) throw new Error("No period usage");
+	return metrics;
+}
+
+async function fetchCursorUsageSummary(): Promise<ProviderMetric[]> {
+	const cookie = process.env.CURSOR_USAGE_SESSION_TOKEN?.trim();
+	if (!cookie) throw new Error("Usage session cookie unavailable");
+	const metrics = cursorPeriodMetrics(await fetchJson("https://cursor.com/api/usage-summary", {
+		Accept: "application/json",
+		Cookie: `WorkosCursorSessionToken=${cookie}`,
+	}));
+	if (metrics.length === 0) throw new Error("No usage summary");
+	return metrics;
 }
 
 function cursorSpendMetrics(
@@ -256,53 +482,6 @@ function cursorSpendMetrics(
 	return metrics;
 }
 
-async function fetchCursorQuotaFromDesktopSession(): Promise<ProviderMetric[]> {
-	const session = await readCursorDesktopSession();
-	if (!session) throw new Error("Cursor desktop session unavailable");
-	const teamBody = session.teamId !== undefined ? { teamId: session.teamId } : {};
-	const [plan, hardLimit, spend] = await Promise.all([
-		fetchCursorDashboardJson(session.token, "GetPlanInfo", teamBody),
-		fetchCursorDashboardJson(session.token, "GetHardLimit", teamBody),
-		session.email
-			? fetchCursorDashboardJson(session.token, "GetTeamSpend", {
-				...teamBody,
-				searchTerm: session.email,
-				page: 1,
-				pageSize: 10,
-			}).catch(() => ({} as Record<string, unknown>))
-			: Promise.resolve({} as Record<string, unknown>),
-	]);
-	const planInfo = asRecord(plan.planInfo);
-	const members = Array.isArray(spend.teamMemberSpend) ? spend.teamMemberSpend : [];
-	const member = members
-		.map((value) => asRecord(value))
-		.find((entry) => {
-			if (!entry) return false;
-			if (!session.email) return true;
-			return typeof entry.email === "string" && entry.email.toLowerCase() === session.email.toLowerCase();
-		});
-	if (!member) {
-		const metrics: ProviderMetric[] = [];
-		if (typeof planInfo?.planName === "string") {
-			metrics.push({ label: "Plan", value: planInfo.planName, tone: "text" });
-		}
-		if (session.teamName) metrics.push({ label: "Team", value: session.teamName, tone: "muted" });
-		if (hardLimit.noUsageBasedAllowed === true) {
-			metrics.push({ label: "On-demand", value: "Off", tone: "muted" });
-		}
-		const reset = formatResetDate(spend.nextCycleStart ?? planInfo?.billingCycleEnd);
-		if (reset) metrics.push({ label: "Reset", value: reset, tone: "muted" });
-		if (metrics.length === 0) throw new Error("No quota data");
-		return metrics;
-	}
-	return cursorSpendMetrics(member, {
-		planName: typeof planInfo?.planName === "string" ? planInfo.planName : undefined,
-		teamName: session.teamName,
-		onDemandAllowed: hardLimit.noUsageBasedAllowed === true ? false : undefined,
-		reset: formatResetDate(spend.nextCycleStart ?? planInfo?.billingCycleEnd),
-	});
-}
-
 async function fetchCursorQuotaFromApiKey(ctx: ExtensionContext): Promise<ProviderMetric[]> {
 	const resolved = await ctx.modelRegistry.getProviderAuth("cursor");
 	const token = resolved?.auth.apiKey;
@@ -343,8 +522,15 @@ async function fetchCursorQuotaFromApiKey(ctx: ExtensionContext): Promise<Provid
 }
 
 export async function fetchCursorQuota(ctx: ExtensionContext): Promise<ProviderMetric[]> {
+	for (const token of await collectCursorAccessTokens(ctx)) {
+		try {
+			return await fetchCursorPeriodUsage(token);
+		} catch {
+			// Try the next token source before falling back to cookies or team spend.
+		}
+	}
 	try {
-		return await fetchCursorQuotaFromDesktopSession();
+		return await fetchCursorUsageSummary();
 	} catch {
 		return fetchCursorQuotaFromApiKey(ctx);
 	}
@@ -399,69 +585,74 @@ export async function fetchCopilotQuota(): Promise<ProviderMetric[]> {
 	return metrics;
 }
 
+export async function fetchOpenAIQuota(ctx: ExtensionContext): Promise<ProviderMetric[]> {
+	const resolved = await ctx.modelRegistry.getProviderAuth("openai");
+	const token = resolved?.auth.apiKey;
+	if (!token) throw new Error("API credential unavailable");
+
+	// Sign in with ChatGPT (SIWC) tokens only work against api.openai.com, not the
+	// Codex wham/usage route. Fall back to a legacy Codex login, a browser session
+	// cookie, or the official “manage usage” link.
+	if (isJwtToken(token)) {
+		try {
+			const codexMetrics = await fetchOpenAICodexQuota(ctx);
+			if (codexMetrics.length > 0) {
+				return [{ label: "Source", value: "Codex login", tone: "muted" }, ...codexMetrics];
+			}
+		} catch {
+			// No openai-codex OAuth or wham/usage unavailable for that token.
+		}
+		try {
+			return await fetchWhamUsageFromSessionCookie();
+		} catch {
+			return chatgptManageUsageMetrics();
+		}
+	}
+
+	const nowSeconds = Math.floor(Date.now() / 1000);
+	const monthStartSeconds = Math.floor(Date.UTC(
+		new Date().getUTCFullYear(),
+		new Date().getUTCMonth(),
+		1,
+	) / 1000);
+	let data: Record<string, unknown>;
+	try {
+		data = await fetchJson(
+			`https://api.openai.com/v1/organization/costs?start_time=${monthStartSeconds}&end_time=${nowSeconds}&bucket_width=1d&limit=31`,
+			{
+				Accept: "application/json",
+				Authorization: `Bearer ${token}`,
+			},
+		);
+	} catch {
+		return [
+			{ label: "Auth", value: "API key connected", tone: "success" },
+			{ label: "Costs", value: "Requires admin key", tone: "dim" },
+		];
+	}
+	const buckets = Array.isArray(data.data) ? data.data : [];
+	let totalUsd = 0;
+	for (const bucket of buckets) {
+		const results = Array.isArray(asRecord(bucket)?.results) ? asRecord(bucket)!.results as unknown[] : [];
+		for (const result of results) {
+			const amount = asRecord(asRecord(result)?.amount);
+			const value = finiteNumber(amount?.value);
+			const currency = typeof amount?.currency === "string" ? amount.currency.toLowerCase() : "usd";
+			if (value !== undefined && currency === "usd") totalUsd += value;
+		}
+	}
+	return [
+		{ label: "Costs", value: `${formatUsd(totalUsd)} · month`, tone: totalUsd > 0 ? "accent" : "muted" },
+	];
+}
+
 export async function fetchOpenAICodexQuota(ctx: ExtensionContext): Promise<ProviderMetric[]> {
 	const resolved = await ctx.modelRegistry.getProviderAuth("openai-codex");
 	const token = resolved?.auth.apiKey;
 	if (!token) throw new Error("OAuth credential unavailable");
-	const payload = decodeJwtPayload(token);
-	const authClaims = asRecord(payload?.["https://api.openai.com/auth"]);
-	const accountId = typeof authClaims?.chatgpt_account_id === "string"
-		? authClaims.chatgpt_account_id
-		: undefined;
+	const accountId = chatgptAccountIdFromToken(token);
 	if (!accountId) throw new Error("Account identifier unavailable");
-	const data = await fetchJson("https://chatgpt.com/backend-api/wham/usage", {
-		Accept: "application/json",
-		Authorization: `Bearer ${token}`,
-		"chatgpt-account-id": accountId,
-		"User-Agent": "codex_cli_rs/0.101.0",
-	});
-	const metrics: ProviderMetric[] = [];
-	if (typeof data.plan_type === "string") {
-		metrics.push({ label: "Plan", value: titleCase(data.plan_type), tone: "text" });
-	}
-	const rateLimit = asRecord(data.rate_limit);
-	const primary = asRecord(rateLimit?.primary_window);
-	const secondary = asRecord(rateLimit?.secondary_window);
-	const weeklyUsedPercent = finiteNumber(secondary?.used_percent);
-	const weeklyWindowSeconds = finiteNumber(secondary?.limit_window_seconds);
-
-	const usedPercent = finiteNumber(primary?.used_percent);
-	const windowSeconds = finiteNumber(primary?.limit_window_seconds);
-	if (usedPercent !== undefined) {
-		metrics.push({
-			label: "Usage",
-			value: `${usedPercent.toFixed(0)}% · ${formatQuotaWindow(windowSeconds ?? 0)}`,
-			tone: quotaTone(usedPercent),
-		});
-		metrics.push({
-			label: "Remaining",
-			value: `${Math.max(0, 100 - usedPercent).toFixed(0)}%`,
-			tone: quotaTone(usedPercent),
-		});
-	}
-	// Show weekly/secondary window (e.g. 7-day limit) when it differs from primary.
-	if (
-		weeklyUsedPercent !== undefined
-		&& weeklyWindowSeconds !== undefined
-		&& weeklyWindowSeconds !== windowSeconds
-	) {
-		metrics.push({
-			label: "Weekly",
-			value: `${weeklyUsedPercent.toFixed(0)}% · ${formatQuotaWindow(weeklyWindowSeconds)}`,
-			tone: quotaTone(weeklyUsedPercent),
-		});
-	}
-	const resetAfter = finiteNumber(primary?.reset_after_seconds);
-	const resetAt = finiteNumber(primary?.reset_at);
-	if (resetAfter !== undefined || resetAt !== undefined) {
-		const seconds = resetAfter ?? Math.max(0, resetAt! - Date.now() / 1000);
-		metrics.push({ label: "Reset", value: formatResetDuration(seconds), tone: "muted" });
-	}
-	const credits = asRecord(data.credits);
-	if (credits?.has_credits === true && typeof credits.balance === "string") {
-		metrics.push({ label: "Credits", value: credits.balance, tone: "accent" });
-	}
-	return metrics;
+	return fetchWhamUsage(token, accountId);
 }
 
 export function rateLimitMetrics(headers: Record<string, string>): ProviderMetric[] {

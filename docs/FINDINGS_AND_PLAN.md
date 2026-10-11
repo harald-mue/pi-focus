@@ -2,9 +2,11 @@
 
 ## Findings that shape the implementation
 
-### Native fullscreen layout is the stable path
+### Wrap Pi's viewport instead of rebuilding it
 
-The former custom viewport intercepted `tui.render`, managed alternate-screen modes, and maintained its own selection coordinates. That approach was sensitive to frame geometry and Pi renderer changes. Pi's native fullscreen `ScrollView` now owns viewport sizing and terminal lifecycle. Mouse reporting stays enabled so the transcript receives wheel events; right-click paste is handled programmatically on Linux.
+Pi 1.1.0 creates a chat viewport (`createChatViewport`) and installs it with `setLayoutRoot` before extensions run. Rebuilding seven root children produced a second `ScrollView`, pinned the header, and broke overscroll, jump-to-latest, and scrollbar theming. Pi Focus now finds the native layout root and primary `ScrollView` and only adds the dashboard `HStack`.
+
+`createChatViewport` is not a public package export. Do not import it from Pi internals.
 
 ### Full-history processing hurts editor latency
 
@@ -12,37 +14,32 @@ The original viewport applied ANSI-aware width truncation to every history row o
 
 ### Session replacement invalidates contexts before all rendering stops
 
-Pi 0.84 can render the outgoing layout once after invalidating its extension context. Any component that dereferences a captured `ctx` during `render()` can crash `/resume`. Render components must receive stable values and callbacks that do not touch stale contexts.
+Pi can render the outgoing layout once after invalidating its extension context. Any component that dereferences a captured `ctx` during `render()` can crash `/resume`. Render components must receive stable values and callbacks that do not touch stale contexts. Restore the native layout root on shutdown so the next runtime does not nest wrappers.
 
 ### Unnamed sessions still need useful identity
 
 `SessionManager.getSessionName()` returns `undefined` unless `/name` was used. Pi's selector identifies such sessions by their first user message, so the dashboard follows the same fallback.
 
-### Fullscreen mouse reporting stays enabled; right-click paste is wrapped on Linux
+### Clipboard: Ctrl+V is Pi's; right-click paste is Windows-only in Pi
 
-Mouse reporting is kept enabled so the transcript ScrollView receives wheel events. On Linux, Pi Focus wraps Pi's built-in `handleRightClickPaste` to respond to button-2 release events, enabling paste from the terminal context menu.
-
-A previous approach that disabled mouse reporting was replaced because it broke mouse-wheel scrolling. The current approach trades native context-menu invocation on all surfaces for working wheel scrolling and application-owned drag selection, with right-click paste handled programmatically on the input box.
+`CustomEditor` maps Ctrl+V to `app.clipboard.pasteImage`, which Pi copies onto a custom editor. Intercepting Ctrl+V or Shift+Enter in `FocusEditor` broke paste and transcript search. Right-click paste is implemented in `TuiAltScreen` only on Windows; Linux needs the existing handler wrap.
 
 ### Modified Enter keys depend on terminal reporting
 
-Ghostty reports Shift+Enter distinctly, allowing Pi Focus to insert a newline while plain Enter submits. KGX/VTE emits Shift+Enter as plain Enter, so an application cannot distinguish the two; Ctrl+J is the supported newline fallback there. Ctrl+Shift+M must remain unbound because Ctrl+M can alias Enter in legacy input.
+Ghostty reports Shift+Enter distinctly. KGX/VTE emits Shift+Enter as plain Enter; Ctrl+J is the newline fallback. Ctrl+Shift+M must remain unbound because Ctrl+M can alias Enter in legacy input.
 
 ## Current acceptance targets
 
 - no rendered line wider than the terminal, including 343 columns
 - median long-session input response below 25 ms
-- transcript keyboard scrolling affects only the transcript layout region
-- `/resume`, `/new`, and `/reload` do not use stale contexts
+- Pi owns transcript keyboard scrolling; the dashboard does not steal those bindings
+- `/resume`, `/new`, and `/reload` do not use stale contexts or nested layout roots
 - unnamed resumed sessions show their first prompt
-- right-click paste behavior matches plain Pi/the terminal
+- Ctrl+V paste matches plain Pi
 - terminal modes and temporary input patches are restored on shutdown
 
 ## Next steps
 
-1. ~~Add an automated PTY regression for session replacement and dashboard title fallback.~~ **Done** — interactive PTY startup test added; reads output until EOF.
-2. ~~Add a manual/PTY regression that verifies right-click is not consumed by Pi Focus.~~ **Done** — mouse behavior documented as implemented with programmatic right-click paste.
-3. Revalidate the seven-root-container assumption after each Pi upgrade.
-4. ~~Remove the retained legacy `FixedViewport` implementation once no rollback path depends on it.~~ **Done** — class and all references removed.
-5. Keep documentation focused on current behavior rather than chronological implementation notes.
-6. Add a dedicated `session_before_compact` / `session_tree` / fork lifecycle test to the PTY regression.
+1. Revalidate native `layoutRoot` + primary `ScrollView` discovery after each Pi upgrade.
+2. Keep documentation focused on current behavior rather than chronological implementation notes.
+3. Add a dedicated `session_before_compact` / `session_tree` / fork lifecycle test to the PTY regression.

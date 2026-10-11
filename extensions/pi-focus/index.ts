@@ -6,7 +6,6 @@ import {
 	type ContextUsage,
 	type ExtensionAPI,
 	type ExtensionContext,
-	type KeybindingsManager,
 	Theme,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
@@ -20,15 +19,17 @@ import {
 	ScrollView,
 	truncateToWidth,
 	visibleWidth,
-	VStack,
 	type Component,
 	type TUI,
+	type ViewportTUI,
 } from "@earendil-works/pi-tui";
 
 import {
 	fetchCopilotQuota,
 	fetchCursorQuota,
 	fetchOpenAICodexQuota,
+	fetchOpenAIQuota,
+	openChatGPTUsagePage,
 	rateLimitMetrics,
 	titleCase,
 	type ProviderMetric,
@@ -105,73 +106,24 @@ function resetTerminalModes(): void {
 	}
 }
 
-const THEME_GLOBAL_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
-
-function activeTheme(): Theme | undefined {
-	return (globalThis as Record<symbol, Theme | undefined>)[THEME_GLOBAL_KEY];
+function childComponents(component: Component): Component[] {
+	if (component instanceof Container) return component.children;
+	const children = (component as { children?: Component[] }).children;
+	return Array.isArray(children) ? children : [];
 }
 
-const TOOL_SUCCESS_BG_PATCH_KEY = Symbol.for("pi-focus:tool-success-bg-patch");
-
-/** Left accent bar on completed tool blocks — mirrors the input box blue stripe. */
-function patchToolSuccessStripe(): void {
-	const theme = activeTheme();
-	if (!theme) return;
-
-	const themeState = theme as Theme & Record<symbol, unknown>;
-	const installedPatch = themeState[TOOL_SUCCESS_BG_PATCH_KEY];
-	if (typeof installedPatch === "function" && theme.bg === installedPatch) return;
-
-	// Always start from Theme.prototype.bg. This also replaces the legacy Pi
-	// Focus patch after /reload instead of wrapping it and accumulating width.
-	const originalBg = Theme.prototype.bg.bind(theme);
-	const patchedBg = ((color, text) => {
-		const isToolSurface = color === "toolPendingBg" || color === "toolSuccessBg" || color === "toolErrorBg";
-		// Pi's built-in tool renderers bold command/title text. Keep Pi Focus tool
-		// blocks at normal weight without affecting Markdown or other UI labels.
-		const surfaceText = isToolSurface ? text.replace(/\x1b\[1m/g, "\x1b[22m") : text;
-		const rendered = originalBg(color, surfaceText);
-		if (color !== "toolSuccessBg") return rendered;
-
-		const renderedWidth = visibleWidth(rendered);
-		if (renderedWidth === 0) return rendered;
-
-		// Match the input box: one canvas column, then the accent stripe, then
-		// the block surface. Clip only right-side padding so the allocated width
-		// remains unchanged.
-		const marginWidth = Math.min(EDITOR_MARGIN_X, Math.max(0, renderedWidth - 1));
-		const bodyWidth = Math.max(0, renderedWidth - marginWidth - 1);
-		const stripe = theme.fg("warning", "│");
-		return fillCanvas(marginWidth) + stripe + truncateToWidth(rendered, bodyWidth, "");
-	}) as Theme["bg"];
-	theme.bg = patchedBg;
-	themeState[TOOL_SUCCESS_BG_PATCH_KEY] = patchedBg;
-}
-
-/** Pi binds Ctrl+Shift+↑/↓ to prompt jump; reclaim them for transcript scrolling. */
-function configureTranscriptScrollKeybindings(keybindings: KeybindingsManager): void {
-	keybindings.setUserBindings({
-		...keybindings.getUserBindings(),
-		"tui.altScreen.previousPrompt": [],
-		"tui.altScreen.nextPrompt": [],
-	});
-}
-
-function scrollTranscriptByKeyboard(
-	data: string,
-	transcriptScrollView: ScrollView | undefined,
-	step = HISTORY_WHEEL_STEP,
-): boolean {
-	if (!transcriptScrollView) return false;
-	if (matchesKey(data, Key.ctrlShift("up"))) {
-		transcriptScrollView.scrollBy(-step);
-		return true;
+function findPrimaryScrollView(component: Component | undefined): ScrollView | undefined {
+	if (!component) return undefined;
+	if (component instanceof ScrollView && component.primary) return component;
+	for (const child of childComponents(component)) {
+		const found = findPrimaryScrollView(child);
+		if (found) return found;
 	}
-	if (matchesKey(data, Key.ctrlShift("down"))) {
-		transcriptScrollView.scrollBy(step);
-		return true;
-	}
-	return false;
+	return undefined;
+}
+
+function getNativeLayoutRoot(tui: ViewportTUI): Component | undefined {
+	return (tui as ViewportTUI & { layoutRoot?: Component }).layoutRoot;
 }
 
 function scrollTranscriptByWheelFallback(
@@ -208,12 +160,16 @@ interface AltScreenTuiWithPaste {
 	handleRightClickPaste(event: SgrMouseEvent): boolean;
 }
 
+const RIGHT_CLICK_PASTE_PATCH = Symbol.for("pi-focus:right-click-paste");
+
 /** Pi's alt-screen TUI only wires right-click paste on Windows; enable it on Linux too. */
 function enableLinuxRightClickPaste(tui: TUI): void {
 	if (process.platform !== "linux") return;
-	const alt = tui as unknown as AltScreenTuiWithPaste;
-	if (!alt.onRightClickPaste) return;
+	const alt = tui as unknown as AltScreenTuiWithPaste & Record<symbol, unknown>;
+	if (!alt.onRightClickPaste || typeof alt.handleRightClickPaste !== "function") return;
+	if (typeof alt[RIGHT_CLICK_PASTE_PATCH] === "function") return;
 	const original = alt.handleRightClickPaste.bind(alt);
+	alt[RIGHT_CLICK_PASTE_PATCH] = original;
 	alt.handleRightClickPaste = (event) => {
 		if (!event.release && event.button === 2) {
 			alt.onRightClickPaste?.();
@@ -223,16 +179,13 @@ function enableLinuxRightClickPaste(tui: TUI): void {
 	};
 }
 
-function restoreToolSuccessStripe(): void {
-	const theme = activeTheme();
-	if (!theme) return;
-
-	const themeState = theme as Theme & Record<symbol, unknown>;
-	const installedPatch = themeState[TOOL_SUCCESS_BG_PATCH_KEY];
-	if (typeof installedPatch === "function" && theme.bg === installedPatch) {
-		theme.bg = Theme.prototype.bg.bind(theme);
-	}
-	delete themeState[TOOL_SUCCESS_BG_PATCH_KEY];
+function restoreLinuxRightClickPaste(tui: TUI | undefined): void {
+	if (!tui) return;
+	const alt = tui as unknown as AltScreenTuiWithPaste & Record<symbol, unknown>;
+	const original = alt[RIGHT_CLICK_PASTE_PATCH];
+	if (typeof original !== "function") return;
+	alt.handleRightClickPaste = original as AltScreenTuiWithPaste["handleRightClickPaste"];
+	delete alt[RIGHT_CLICK_PASTE_PATCH];
 }
 
 type Phase = "Ready" | "Thinking" | "Exploring" | "Implementing" | "Testing" | "Running command" | "Responding";
@@ -283,6 +236,7 @@ interface ProviderState {
 interface RequestActivity {
 	startedAt?: number;
 	durationMs?: number;
+	aborted?: boolean;
 	calls: number;
 	errors: number;
 	tools: Map<string, number>;
@@ -495,12 +449,15 @@ class FocusEditor extends CustomEditor {
 		keybindings: ConstructorParameters<typeof CustomEditor>[2],
 		private readonly appTheme: Theme,
 		private readonly usesManagedLayout: () => boolean,
-		private readonly onViewportInput: (data: string) => boolean,
 		private readonly onWheelFallbackInput: (data: string) => boolean,
 		private readonly onToggleDashboard: () => void,
 		private readonly wheelFallbackEnabled: () => boolean,
 	) {
-		super(tui, theme, keybindings, { paddingX: 1, autocompleteMaxVisible: 8 });
+		super(tui, theme, keybindings, {
+			paddingX: 1,
+			autocompleteMaxVisible: 8,
+			embedWorkingStatus: true,
+		});
 	}
 
 	paste(text: string): void {
@@ -510,14 +467,12 @@ class FocusEditor extends CustomEditor {
 	}
 
 	override handleInput(data: string): void {
-		// Handle Shift+Enter before CustomEditor dispatches extension shortcuts.
+		// Ctrl+V is app.clipboard.pasteImage on CustomEditor (text, files, images).
+		// Shift+Enter / Ctrl+J are tui.input.newLine. Do not intercept them here:
+		// transcript search uses Shift+Enter for the previous match.
 		// Ctrl+Shift+M is intentionally not a dashboard shortcut: terminals can
 		// encode Ctrl+M as Enter, which made newline input submit the prompt.
-		if (matchesKey(data, Key.shift("enter"))) {
-			super.handleInput("\n");
-			return;
-		}
-		if (matchesKey(data, Key.alt("m")) || matchesKey(data, Key.f2)) {
+		if (matchesKey(data, Key.alt("m"))) {
 			this.onToggleDashboard();
 			return;
 		}
@@ -532,7 +487,7 @@ class FocusEditor extends CustomEditor {
 		) {
 			if (this.onWheelFallbackInput(data)) return;
 		}
-		if (!this.onViewportInput(data)) super.handleInput(data);
+		super.handleInput(data);
 	}
 
 	private pinnedTopPadding(width: number, editorHeight: number): number {
@@ -711,9 +666,11 @@ class ControlCenter {
 		const request = this.state.requestActivity;
 		if (request.startedAt !== undefined) {
 			const callLabel = `${request.calls} tool call${request.calls === 1 ? "" : "s"}`;
-			const errors = request.errors > 0
-				? theme.fg("error", ` · ${request.errors} failed`)
-				: theme.fg("success", " · no failures");
+			const errors = request.aborted
+				? theme.fg("warning", " · aborted")
+				: request.errors > 0
+					? theme.fg("error", ` · ${request.errors} failed`)
+					: theme.fg("success", " · no failures");
 			lines.push(field("Request", `${theme.fg("text", callLabel)}${errors}`));
 			const elapsed = request.durationMs ?? Date.now() - request.startedAt;
 			lines.push(field(
@@ -742,8 +699,8 @@ class ControlCenter {
 
 		const footer = [
 			row(theme.fg("muted", truncateToWidth(this.cwd, contentWidth, "…"))),
-			row(theme.fg("muted", `Ctrl+Shift+↑↓ scroll${this.state.wheelFallbackEnabled ? "  ·  ↑↓ scroll" : ""}`)),
-			row(theme.fg("muted", `F2, Alt+M, /focus  hide${this.state.wheelFallbackEnabled ? "" : "  · /wheel-scroll on"}`)),
+			row(theme.fg("muted", `PgUp/PgDn scroll  ·  Ctrl+Home/End${this.state.wheelFallbackEnabled ? "  · ↑↓ scroll" : ""}`)),
+			row(theme.fg("muted", `Ctrl+V paste  ·  Alt+M /focus hide${this.state.wheelFallbackEnabled ? "" : "  · /wheel-scroll"}`)),
 		];
 		const bodyLimit = Math.max(0, targetHeight - footer.length);
 		if (lines.length > bodyLimit) lines.length = bodyLimit;
@@ -758,7 +715,6 @@ class ControlCenter {
 export default function piFocus(pi: ExtensionAPI) {
 	registerTokenUsage(pi);
 	registerSessionBulkDelete(pi);
-	patchToolSuccessStripe();
 
 	const state: FocusState = {
 		phase: "Ready",
@@ -806,6 +762,8 @@ export default function piFocus(pi: ExtensionAPI) {
 	let providerRefreshGeneration = 0;
 	let transcriptScrollView: ScrollView | undefined;
 	let chromeTui: TUI | undefined;
+	let nativeLayoutRoot: Component | undefined;
+	let focusLayoutRoot: Component | undefined;
 	let headerVisible = true;
 	let headerHideTimer: ReturnType<typeof setTimeout> | undefined;
 	const resetTerminalOnExit = () => resetTerminalModes();
@@ -857,6 +815,7 @@ export default function piFocus(pi: ExtensionAPI) {
 
 		const supportsQuota = providerId === "github-copilot"
 			|| providerId === "openai-codex"
+			|| providerId === "openai"
 			|| providerId === "cursor";
 		const previousMetrics = sameProvider ? state.provider.quotaMetrics : [];
 		const previousRateMetrics = sameProvider ? state.provider.rateMetrics : [];
@@ -879,7 +838,9 @@ export default function piFocus(pi: ExtensionAPI) {
 				? await fetchCopilotQuota()
 				: providerId === "openai-codex"
 					? await fetchOpenAICodexQuota(ctx)
-					: await fetchCursorQuota(ctx);
+					: providerId === "openai"
+						? await fetchOpenAIQuota(ctx)
+						: await fetchCursorQuota(ctx);
 			if (generation !== providerRefreshGeneration || ctx.model?.provider !== providerId) return;
 			state.provider.quotaMetrics = quotaMetrics;
 			state.provider.quotaStatus = quotaMetrics.length > 0 ? "available" : "unsupported";
@@ -982,7 +943,6 @@ export default function piFocus(pi: ExtensionAPI) {
 	};
 
 	const installChrome = (ctx: ExtensionContext) => {
-		patchToolSuccessStripe();
 		transcriptScrollView = undefined;
 		const appTheme = ctx.ui.theme;
 		const systemInfo = collectSystemInfo(ctx.cwd);
@@ -998,9 +958,45 @@ export default function piFocus(pi: ExtensionAPI) {
 		});
 		ctx.ui.setWorkingVisible(false);
 
-		ctx.ui.setHeader((tui, theme) => {
+		const attachDashboard = (tui: TUI): void => {
 			chromeTui = tui;
 			requestRender = () => tui.requestRender();
+			if (!isViewportTUI(tui)) {
+				ctx.ui.notify("Pi Focus requires tuiMode=fullscreen for a fixed message viewport.", "warning");
+				return;
+			}
+			enableLinuxRightClickPaste(tui);
+			const currentRoot = getNativeLayoutRoot(tui);
+			const workspace = currentRoot === focusLayoutRoot && nativeLayoutRoot
+				? nativeLayoutRoot
+				: currentRoot;
+			transcriptScrollView = findPrimaryScrollView(workspace);
+			if (!workspace || !transcriptScrollView) {
+				ctx.ui.notify("Pi Focus: fullscreen layout is incompatible.", "warning");
+				return;
+			}
+			if (currentRoot === focusLayoutRoot) return;
+			nativeLayoutRoot = workspace;
+			const dashboard = new ControlCenter(tui, appTheme, ctx.cwd, state);
+			focusLayoutRoot = new HStack([
+				{ component: workspace, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+				{
+					component: dashboard,
+					basis: CONTROL_WIDTH,
+					grow: 0,
+					shrink: 0,
+					minSize: CONTROL_WIDTH,
+					maxSize: CONTROL_WIDTH,
+					visible: ({ width, height }) =>
+						dashboardVisible && width >= DASHBOARD_MIN_WIDTH && height >= DASHBOARD_MIN_HEIGHT,
+				},
+			], { gap: DASHBOARD_GAP });
+			tui.setLayoutRoot(focusLayoutRoot);
+			tui.requestRender(true);
+		};
+
+		ctx.ui.setHeader((tui, theme) => {
+			attachDashboard(tui);
 			const component: Component = {
 				render(width: number): string[] {
 					if (!headerVisible) return [];
@@ -1067,7 +1063,7 @@ export default function piFocus(pi: ExtensionAPI) {
 						.map(([, text]) => oneLine(text));
 					statusItems.unshift(theme.fg(phaseColor, `${phaseIcon} ${state.phase}`));
 					if (transcriptScrollView && !transcriptScrollView.isFollowingEnd) {
-						statusItems.push(theme.fg("warning", "↑ viewing history · Ctrl+Shift+↓ toward latest"));
+						statusItems.push(theme.fg("warning", "↑ viewing history · Ctrl+End to latest"));
 					}
 					const statuses = statusItems.join(theme.fg("dim", "  ·  "));
 					const statusMargin = fillCanvas(EDITOR_MARGIN_X);
@@ -1081,80 +1077,21 @@ export default function piFocus(pi: ExtensionAPI) {
 		});
 
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-			configureTranscriptScrollKeybindings(keybindings);
+			attachDashboard(tui);
 			return new FocusEditor(
 				tui,
 				theme,
 				keybindings,
 				appTheme,
 				() => transcriptScrollView !== undefined,
-				(data) => scrollTranscriptByKeyboard(data, transcriptScrollView),
 				(data) => scrollTranscriptByWheelFallback(data, transcriptScrollView),
 				() => void toggleDashboard(ctx),
 				() => wheelFallbackEnabled,
 			);
 		});
 
-		// Keep Pi's fullscreen mouse reporting enabled so wheel events reach the
-		// primary transcript ScrollView. Right-click paste is wired on Linux below.
-		// Use Pi's native fullscreen layout engine. Only loaded notices and chat
-		// messages live in the ScrollView; header, editor dock, footer, and the
-		// right-hand dashboard are fixed layout siblings.
-		if (chromeTui && isViewportTUI(chromeTui)) {
-			enableLinuxRightClickPaste(chromeTui);
-			const roots = chromeTui.children;
-			const document = roots[0];
-			if (document instanceof Container && document.children.length >= 3 && roots.length >= 7) {
-				const transcript = new Container();
-				for (const child of document.children.slice(1)) transcript.addChild(child);
-				transcriptScrollView = new ScrollView(transcript, {
-					follow: "end",
-					primary: true,
-					overscroll: "contain",
-					scrollbar: "auto",
-					scrollbarStyle: (text) => appTheme.bg("scrollbarThumb", text),
-				});
-				const dock = new VStack([
-					{ component: roots[1]!, shrink: 1, minSize: 0 },
-					{ component: roots[2]!, shrink: 1, minSize: 0 },
-					{ component: roots[3]!, shrink: 1, minSize: 0 },
-					{ component: roots[4]!, shrink: 1, minSize: 3 },
-					{ component: roots[5]!, shrink: 1, minSize: 0 },
-					{ component: roots[6]!, shrink: 1, minSize: 1 },
-				]);
-				const left = new VStack([
-					{ component: document.children[0]!, basis: "auto", grow: 0, shrink: 1, minSize: 0 },
-					{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-					{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-				]);
-				// Render only from plain snapshots. Pi can render the outgoing layout
-				// once after invalidating its ExtensionContext during session replacement.
-				const dashboard = new ControlCenter(
-					chromeTui,
-					appTheme,
-					ctx.cwd,
-					state,
-				);
-				chromeTui.setLayoutRoot(new HStack([
-					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-					{
-						component: dashboard,
-						basis: CONTROL_WIDTH,
-						grow: 0,
-						shrink: 0,
-						minSize: CONTROL_WIDTH,
-						maxSize: CONTROL_WIDTH,
-						visible: ({ width, height }) =>
-							dashboardVisible && width >= DASHBOARD_MIN_WIDTH && height >= DASHBOARD_MIN_HEIGHT,
-					},
-				], { gap: DASHBOARD_GAP }));
-				chromeTui.requestRender(true);
-			} else {
-				ctx.ui.notify("Pi Focus: fullscreen component layout is incompatible.", "warning");
-			}
-		} else {
-			ctx.ui.notify("Pi Focus requires tuiMode=fullscreen for a fixed message viewport.", "warning");
-		}
+		if (chromeTui) attachDashboard(chromeTui);
+
 
 		headerVisible = true;
 		if (headerHideTimer) clearTimeout(headerHideTimer);
@@ -1192,7 +1129,13 @@ export default function piFocus(pi: ExtensionAPI) {
 		if (headerHideTimer) clearTimeout(headerHideTimer);
 		headerHideTimer = undefined;
 		ctx.ui.setWorkingVisible(true);
-		restoreToolSuccessStripe();
+		restoreLinuxRightClickPaste(chromeTui);
+		if (chromeTui && isViewportTUI(chromeTui) && nativeLayoutRoot) {
+			chromeTui.setLayoutRoot(nativeLayoutRoot);
+		}
+		nativeLayoutRoot = undefined;
+		focusLayoutRoot = undefined;
+		transcriptScrollView = undefined;
 		// Interactive quit stops the TUI before extension cleanup. Keep the exit
 		// fallback installed for quit; replacement sessions remove it before the
 		// next extension instance installs its own handler.
@@ -1211,6 +1154,7 @@ export default function piFocus(pi: ExtensionAPI) {
 			startedAt: Date.now(),
 			calls: 0,
 			errors: 0,
+			aborted: false,
 			tools: new Map(),
 		};
 		setPhase(ctx, "Thinking");
@@ -1220,7 +1164,7 @@ export default function piFocus(pi: ExtensionAPI) {
 		if (state.active.size === 0) setPhase(ctx, "Responding");
 	});
 	pi.on("tool_execution_start", async (event, ctx) => {
-		patchToolSuccessStripe();
+		if (event.parentToolCallId) return;
 		const activity: Activity = {
 			tool: event.toolName,
 			detail: toolDetail(event.toolName, event.args),
@@ -1235,10 +1179,11 @@ export default function piFocus(pi: ExtensionAPI) {
 		setPhase(ctx, phaseForTool(event.toolName, event.args));
 	});
 	pi.on("tool_execution_end", async (event, ctx) => {
+		if (event.parentToolCallId) return;
 		const activity = state.active.get(event.toolCallId);
 		if (activity) {
 			state.active.delete(event.toolCallId);
-			activity.durationMs = Date.now() - activity.startedAt;
+			activity.durationMs = event.durationMs ?? Date.now() - activity.startedAt;
 			activity.error = event.isError;
 			if (event.isError) state.requestActivity.errors += 1;
 			state.recent.unshift(activity);
@@ -1247,9 +1192,10 @@ export default function piFocus(pi: ExtensionAPI) {
 		if (["edit", "write", "bash"].includes(event.toolName)) void refreshGit(ctx);
 		if (state.active.size === 0) setPhase(ctx, "Thinking");
 	});
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		if (state.requestActivity.startedAt !== undefined) {
 			state.requestActivity.durationMs = Date.now() - state.requestActivity.startedAt;
+			state.requestActivity.aborted = event.aborted;
 		}
 		setPhase(ctx, "Ready");
 		await refreshGit(ctx);
@@ -1296,10 +1242,6 @@ export default function piFocus(pi: ExtensionAPI) {
 		description: "Toggle the passive Pi Focus dashboard",
 		handler: toggleDashboard,
 	});
-	pi.registerShortcut(Key.f2, {
-		description: "Toggle the passive Pi Focus dashboard",
-		handler: toggleDashboard,
-	});
 	pi.registerCommand("provider-usage", {
 		description: "Refresh provider quota information",
 		handler: async (_args, ctx) => {
@@ -1309,6 +1251,18 @@ export default function piFocus(pi: ExtensionAPI) {
 				status === "available" ? "Provider usage refreshed." : state.provider.quotaMessage ?? "Provider usage unavailable.",
 				status === "available" ? "info" : "warning",
 			);
+		},
+	});
+	pi.registerCommand("chatgpt-usage", {
+		description: "Open ChatGPT Settings → Usage in the browser",
+		handler: async (_args, ctx) => {
+			try {
+				await openChatGPTUsagePage();
+				await ctx.ui.notify("Opened ChatGPT usage in your browser.", "info");
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await ctx.ui.notify(message, "warning");
+			}
 		},
 	});
 }

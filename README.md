@@ -1,15 +1,15 @@
 # Pi Focus
 
-Pi Focus is a Pi coding-agent extension that adds a fixed conversation viewport, a right-hand status dashboard, token-usage commands, session bulk deletion, and a matching theme.
+Pi Focus is a Pi coding-agent extension that adds a right-hand status dashboard, token-usage commands, session bulk deletion, and a matching theme on top of Pi's native fullscreen TUI.
 
 ## Features
 
-- transcript-only keyboard scrolling in Pi's fullscreen TUI
-- fixed input area, footer, and responsive 48-column dashboard
-- provider quota, Git, session, and tool-activity information
-- session-safe `/resume`, `/new`, and `/reload` behavior on Pi 0.84
+- wraps Pi 1.1.0's native chat viewport instead of rebuilding the layout tree
+- responsive 48-column dashboard (session, provider quota including Cursor period usage, Git, tool activity)
+- session-safe `/resume`, `/new`, and `/reload` behavior
 - session titles derived from the explicit name or first user message
-- reliable native terminal right-click context menu and paste
+- Ctrl+V clipboard paste (text, files, images) via Pi's `app.clipboard.pasteImage`
+- Linux right-click paste (Pi enables that handler on Windows only)
 - `/last-request`, `/last-request-dump`, and `/delete-sessions`
 
 ## Project layout
@@ -29,9 +29,9 @@ docs/                              Design and maintenance documentation
 
 ## Requirements
 
-- Pi coding agent 0.84.1 or a compatible newer release
+- Pi coding agent 1.1.0 or a compatible newer release
 - Bash and Python 3
-- `tuiMode: "fullscreen"` (set by the installer)
+- Fullscreen TUI (Pi's default; the installer also sets `tuiMode: "fullscreen"`)
 
 ## Install
 
@@ -52,13 +52,17 @@ The installer writes to `${PI_CODING_AGENT_DIR:-~/.pi/agent}` and backs up repla
 
 | Input | Action |
 |---|---|
-| Shift+Enter (Ghostty and compatible terminals) or Ctrl+J (KGX fallback) | Insert a new line |
-| Ctrl+Shift+↑/↓ | Scroll history by three rows |
-| Right-click in input box | Open the terminal context menu (including Paste) |
-| F2, Alt+M, or `/focus` | Hide or show the dashboard |
+| Shift+Enter or Ctrl+J | Insert a new line (Pi `tui.input.newLine`; Ghostty reports Shift+Enter, KGX/VTE may send plain Enter) |
+| Ctrl+V | Paste clipboard text, files, or images |
+| PageUp / PageDown | Scroll the transcript |
+| Ctrl+Home / Ctrl+End | Transcript top / jump to latest |
+| Ctrl+Shift+↑/↓ | Jump to previous/next marked prompt (Pi default) |
+| Right-click in input | Paste from clipboard on Linux (Focus) and Windows (Pi) |
+| Alt+M or `/focus` | Hide or show the dashboard |
+| `/wheel-scroll` | Optional: arrow keys scroll the transcript while the editor is empty |
 | Ctrl+Z | Suspend Pi |
 
-Modified-key support is terminal-dependent: Ghostty reports Shift+Enter distinctly, while KGX/VTE sends it as plain Enter. Use Ctrl+J for a newline in KGX.
+Do not bind Ctrl+Shift+M: Ctrl+M can alias Enter in legacy terminal input.
 
 ## Documentation
 

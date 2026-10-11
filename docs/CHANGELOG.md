@@ -1,16 +1,16 @@
 # Release notes
 
-Pi Focus currently targets Pi 0.84.1.
+Pi Focus currently targets Pi 1.1.0.
 
 ## Current baseline
 
-- Native fullscreen transcript layout with fixed input/footer and responsive dashboard.
-- Session-safe `/resume`, `/new`, and reload lifecycle.
+- Dashboard wrapped around Pi's native fullscreen chat viewport (no seven-container rebuild).
+- Session-safe `/resume`, `/new`, and reload lifecycle; native layout restored on shutdown.
 - Explicit session names or first-message titles in the dashboard.
-- Fullscreen mouse reporting is disabled so native terminal right-click context-menu paste remains reliable.
-- Shift+Enter inserts a newline in Ghostty and other terminals with modified-key reporting; Ctrl+J is the documented KGX/VTE fallback.
-- Transcript-only Ctrl+Shift+↑/↓ scrolling; mouse-wheel reporting remains disabled for native context menus.
-- Provider quota, Git state, request activity, token commands, and bulk session deletion.
+- Ctrl+V uses Pi clipboard paste (text, files, images). Linux right-click paste wraps Pi's Windows-only handler.
+- Pi transcript keys kept: PageUp/PageDown, Ctrl+Home/End, Ctrl+Shift+↑/↓ prompt jump.
+- Provider quota, Git state, request activity (`durationMs`, aborted runs), token commands, and bulk session deletion.
+- Cursor quota prefers Pi OAuth / `CURSOR_ACCESS_TOKEN` and `GetCurrentPeriodUsage` (Included/Auto/API). Desktop DB and Team Admin spend are fallbacks.
 - Width-safe rendering and long-session input latency below the 25 ms target in the recorded benchmark.
 
 Detailed implementation history is intentionally not maintained here. Current behavior, design constraints, and verification steps live in `CURRENT_STATE.md`, `ARCHITECTURE.md`, and `TESTING.md`.

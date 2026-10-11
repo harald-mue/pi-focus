@@ -25,6 +25,8 @@ FAIL_PATTERNS = [
     "SyntaxError:",
     "ctx is stale",
     "stack trace",
+    "fullscreen layout is incompatible",
+    "Pi Focus requires tuiMode",
 ]
 EXTENSION_PATH = str(ROOT / "extensions/pi-focus/index.ts")
 LOAD_TIMEOUT = 30.0
